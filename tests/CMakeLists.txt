@@ -9,6 +9,8 @@ target_sources(curvable_tests PRIVATE
     PlaybackEngineTests.cpp
     ScheduleExchangeTests.cpp
     ProjectSerializerTests.cpp
+    NoteEditingTests.cpp
+    RollViewTests.cpp
     ${CURVABLE_JUCE_MODEL_SOURCES}
 )
 

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "hosting/HostingContext.h"
+#include "ui/Theme.h"
 
 #include <juce_gui_basics/juce_gui_basics.h>
 
@@ -27,6 +28,8 @@ public:
 
     /** @param currentKey  当前已加载音源的 SynthEntry::getKey()，用于标记 */
     void setEntries (juce::Array<SynthEntry> entries, const juce::String& currentKey, bool canUnload);
+
+    void setPalette (const Palette&);
 
     /** 打开面板时调用：清空搜索并让搜索框获得焦点。 */
     void focusSearch();
@@ -55,6 +58,7 @@ private:
     juce::Array<SynthEntry> allEntries;
     juce::Array<SynthEntry> filtered;
     juce::String currentKey;
+    Palette palette = Palette::day();
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (SynthBrowser)
 };

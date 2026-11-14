@@ -20,6 +20,7 @@ add_subdirectory(libs/JUCE)
 # ---------------------------------------------------------------------------
 add_library(curvable_core STATIC
     src/model/Project.cpp
+    src/model/NoteEditing.cpp
     src/engine/PitchBend.cpp
     src/engine/Schedule.cpp
     src/engine/SketchPlayer.cpp
@@ -83,6 +84,9 @@ target_sources(Curvable PRIVATE
     src/plugin/PluginProcessor.cpp
     src/plugin/PluginEditor.cpp
     src/ui/SynthBrowser.cpp
+    src/ui/Theme.cpp
+    src/ui/CurvableLookAndFeel.cpp
+    src/ui/PianoRoll.cpp
     ${CURVABLE_JUCE_MODEL_SOURCES}
     ${CURVABLE_HOSTING_SOURCES}
 )

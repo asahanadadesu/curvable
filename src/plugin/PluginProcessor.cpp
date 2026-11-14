@@ -9,6 +9,31 @@ namespace
 {
     constexpr auto rootType = "CurvableState";
     constexpr int maxHostNotesPerBlock = 1024;
+
+    /** 可撤销的音符编辑：只替换音符，保留播放模式等其他设置。 */
+    class NotesEdit final : public juce::UndoableAction
+    {
+    public:
+        NotesEdit (CurvableProcessor& p, std::vector<Note> beforeNotes, std::vector<Note> afterNotes, NoteId nextIdAfter)
+            : processor (p), before (std::move (beforeNotes)), after (std::move (afterNotes)), nextId (nextIdAfter) {}
+
+        bool perform() override { apply (after); return true; }
+        bool undo() override    { apply (before); return true; }
+        int getSizeInUnits() override { return (int) (before.size() + after.size()) + 1; }
+
+    private:
+        void apply (const std::vector<Note>& notes)
+        {
+            auto project = processor.getProject();
+            project.notes = notes;
+            project.nextId = std::max (project.nextId, nextId); // 撤销后新加的音符也不会和旧 id 冲突
+            processor.setProject (std::move (project));
+        }
+
+        CurvableProcessor& processor;
+        std::vector<Note> before, after;
+        NoteId nextId;
+    };
 }
 
 CurvableProcessor::CurvableProcessor()
@@ -101,6 +126,21 @@ void CurvableProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mi
     engine.process (mode, scheduleExchange.acquire(), transport, numSamples,
                     hostNotes.data(), (int) hostNotes.size(), sketchEvents);
 
+    if (mode == PlaybackMode::automatic && transport.isPlaying && transport.hasPosition)
+        playheadBeat = transport.ppq;
+    else if (mode == PlaybackMode::trigger && engine.isTriggerActive())
+        playheadBeat = engine.getTriggerPosition();
+    else
+        playheadBeat = -1.0;
+
+    // 试听音符（来自卷帘和琴键）
+    previewFifo.read (previewFifo.getNumReady()).forEach ([this] (int index)
+    {
+        const auto& e = previewEvents[(size_t) index];
+        scratchMidi.addEvent (e.velocity > 0 ? juce::MidiMessage::noteOn (1, e.pitch, (juce::uint8) e.velocity)
+                                             : juce::MidiMessage::noteOff (1, e.pitch), 0);
+    });
+
     for (const auto& e : sketchEvents.get())
     {
         scratchMidi.addEvent (e.noteOn ? juce::MidiMessage::noteOn (1, e.pitch, (juce::uint8) e.velocity)
@@ -134,6 +174,28 @@ void CurvableProcessor::setProject (Project newProject, bool isUserEdit)
     }
 
     projectChanged.sendChangeMessage();
+}
+
+void CurvableProcessor::commitEdit (const Project& before, const juce::String& name)
+{
+    const auto after = getProject();
+
+    if (after.notes == before.notes)
+        return;
+
+    undoManager.beginNewTransaction (name);
+    undoManager.perform (new NotesEdit (*this, before.notes, after.notes, after.nextId));
+}
+
+void CurvableProcessor::previewNote (int pitch, int velocity)
+{
+    if (pitch < 0 || pitch > 127)
+        return;
+
+    previewFifo.write (1).forEach ([&] (int index)
+    {
+        previewEvents[(size_t) index] = { pitch, juce::jlimit (0, 127, velocity) };
+    });
 }
 
 void CurvableProcessor::setPlaybackMode (PlaybackMode mode)
@@ -173,6 +235,8 @@ void CurvableProcessor::setStateInformation (const void* data, int sizeInBytes)
 
     if (! state.hasType (rootType))
         return;
+
+    undoManager.clearUndoHistory();
 
     // 早期版本的状态没有 Project 节点：保持空工程
     if (auto restored = ProjectSerializer::fromValueTree (state.getChildWithName (ProjectSerializer::type)))

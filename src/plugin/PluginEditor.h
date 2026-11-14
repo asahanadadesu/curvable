@@ -1,6 +1,8 @@
 #pragma once
 
 #include "plugin/PluginProcessor.h"
+#include "ui/CurvableLookAndFeel.h"
+#include "ui/PianoRoll.h"
 #include "ui/SynthBrowser.h"
 
 namespace curvable
@@ -18,7 +20,7 @@ public:
     void paint (juce::Graphics&) override;
     void resized() override;
 
-    // 从资源管理器 / 访达拖入插件文件即可加载，无需扫描
+    // 从资源管理器 / 访达 / FL 浏览器拖入插件文件即可加载，无需扫描
     bool isInterestedInFileDrag (const juce::StringArray& files) override;
     void fileDragEnter (const juce::StringArray&, int, int) override;
     void fileDragExit (const juce::StringArray&) override;
@@ -27,6 +29,21 @@ public:
 private:
     enum class Page { pianoRoll, synth };
 
+    /** 浮在最上层的提示（拖拽提示），不拦截鼠标。 */
+    struct Overlay final : public juce::Component
+    {
+        std::function<void (juce::Graphics&)> painter;
+        void paint (juce::Graphics& g) override { if (painter) painter (g); }
+    };
+
+    /** 圆形图标按钮（设置）。 */
+    struct GearButton final : public juce::Button
+    {
+        explicit GearButton (const Palette& p) : juce::Button ("Settings"), palette (p) {}
+        void paintButton (juce::Graphics&, bool isHighlighted, bool isDown) override;
+        const Palette& palette;
+    };
+
     void changeListenerCallback (juce::ChangeBroadcaster*) override;
     void componentMovedOrResized (juce::Component&, bool wasMoved, bool wasResized) override;
     void componentBeingDeleted (juce::Component&) override;
@@ -34,15 +51,19 @@ private:
     void refresh();
     void setPage (Page);
     void refreshModeButtons();
+    void applyTheme (bool dark);
+    void showSettingsMenu();
+    void rebuildChrome();
 
-    /** 在 Synth 页嵌入音源界面（或隐藏它），并让窗口足够大。 */
+    /** 在 Synth 页嵌入音源界面（或隐藏它），并让窗口贴合它。 */
     void updateEmbeddedEditor();
     void detachEmbeddedEditor();
-
-    /** Synth 页：让窗口贴合音源界面的大小。 */
     void fitWindowToSynth (juce::AudioProcessorEditor&);
     void leaveSynthLayout();
+
     juce::Rectangle<int> getBodyArea() const;
+    bool isCompact() const noexcept;
+
     void showSynthBrowser();
     void hideSynthBrowser();
     void showPluginManager();
@@ -55,19 +76,23 @@ private:
     HostedInstrument& hosted;
     HostingContext& context;
 
+    Palette palette;
+    CurvableLookAndFeel lookAndFeel;
+
     juce::TextButton pianoRollTab { "Piano roll" };
     juce::TextButton synthTab { "Synth" };
-    juce::TextButton synthButton;
-
-    // 播放模式
     juce::TextButton autoModeButton { "AUTO" };
     juce::TextButton triggerModeButton { "TRIGGER" };
     juce::TextButton offModeButton { "OFF" };
+    juce::TextButton synthButton;
+    GearButton settingsButton { palette };
 
-    // 卷帘页（M2 临时）：测试乐句
-    juce::TextButton testPhraseButton { "Insert test phrase" };
-    juce::TextButton clearNotesButton { "Clear notes" };
+    PianoRoll pianoRoll { processor, palette };
     SynthBrowser browser;
+    Overlay overlay;
+
+    juce::Rectangle<int> logoBounds, tabsBounds, modesBounds;
+    juce::Image chrome;
 
     juce::String statusText;
     bool statusIsError = false;
@@ -77,9 +102,9 @@ private:
     Page page = Page::pianoRoll;
     juce::Component::SafePointer<juce::AudioProcessorEditor> embeddedEditor;
 
-    bool synthLayoutActive = false;            ///< 窗口当前按音源界面定尺寸
+    bool synthLayoutActive = false;               ///< 窗口当前按音源界面定尺寸
     juce::Point<int> pianoRollSize { 1000, 620 }; ///< 回到卷帘页时恢复的窗口大小
-    bool layingOut = false;                    ///< 防止"我们调整音源大小 → 音源通知我们 → 再调整"的循环
+    bool layingOut = false;                       ///< 防止"我们调整音源大小 → 音源通知我们 → 再调整"的循环
 
     /** 编辑器自己的提示（例如拖入的文件无法识别），优先于音源状态显示。 */
     juce::String message;

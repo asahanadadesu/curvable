@@ -61,6 +61,18 @@ public:
     /** 编辑内容变化时（包括宿主恢复工程）发送 change 消息。 */
     juce::ChangeBroadcaster projectChanged;
 
+    /** 记录一次可撤销的音符编辑：before 是编辑前的工程，编辑后的内容取当前工程。
+        音符没有变化时不记录。撤销 / 重做只影响音符，不影响播放模式等设置。 */
+    void commitEdit (const Project& before, const juce::String& name);
+
+    juce::UndoManager& getUndoManager() noexcept { return undoManager; }
+
+    /** 试听：立即把音符发给音源（velocity 为 0 表示松开）。消息线程调用。 */
+    void previewNote (int pitch, int velocity);
+
+    /** 界面用：当前播放位置（拍）；没有在播放时返回负数。 */
+    double getPlayheadBeat() const noexcept { return playheadBeat.load(); }
+
 private:
     void changeListenerCallback (juce::ChangeBroadcaster*) override;
     void timerCallback() override;
@@ -74,6 +86,14 @@ private:
     ScheduleExchange scheduleExchange;
     std::atomic<PlaybackMode> playbackMode { PlaybackMode::automatic };
     std::atomic<bool> stateChanged { false };
+    std::atomic<double> playheadBeat { -1.0 };
+
+    juce::UndoManager undoManager { 0, 200 };
+
+    // 试听音符：消息线程写入，音频线程读出
+    struct PreviewEvent { int pitch; int velocity; };
+    juce::AbstractFifo previewFifo { 256 };
+    std::array<PreviewEvent, 256> previewEvents {};
 
     // 以下只在音频线程使用（prepare / release 除外）
     PlaybackEngine engine;

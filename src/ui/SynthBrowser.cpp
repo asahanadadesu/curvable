@@ -1,13 +1,11 @@
 #include "ui/SynthBrowser.h"
+#include "ui/CurvableLookAndFeel.h"
 
 namespace curvable
 {
 
 namespace
 {
-    const auto panelColour  = juce::Colour (0xff171a21);
-    const auto rowColour    = juce::Colour (0xff1f232c);
-    const auto accentColour = juce::Colour (0xff5ad1a0);
 
     constexpr int rowHeight = 34;
 
@@ -25,12 +23,9 @@ namespace
 
 SynthBrowser::SynthBrowser()
 {
-    search.setTextToShowWhenEmpty ("Type to search synths...", juce::Colours::white.withAlpha (0.35f));
+    search.setTextToShowWhenEmpty ("Type to search synths...", palette.muted);
     search.setFont (juce::FontOptions (16.0f));
     search.setIndents (10, 0);
-    search.setColour (juce::TextEditor::backgroundColourId, rowColour);
-    search.setColour (juce::TextEditor::outlineColourId, juce::Colours::transparentBlack);
-    search.setColour (juce::TextEditor::focusedOutlineColourId, accentColour.withAlpha (0.6f));
     search.onTextChange = [this] { applyFilter(); };
     search.onReturnKey  = [this] { choose (list.getSelectedRow()); };
     search.onEscapeKey  = [this] { if (onDismiss) onDismiss(); };
@@ -40,6 +35,9 @@ SynthBrowser::SynthBrowser()
     list.setColour (juce::ListBox::backgroundColourId, juce::Colours::transparentBlack);
     list.setOutlineThickness (0);
     list.addKeyListener (this);
+
+    for (auto* b : { &browseButton, &managerButton, &unloadButton, &closeButton })
+        CurvableLookAndFeel::setStyle (*b, "pill");
 
     browseButton.onClick  = [this] { if (onBrowseFile) onBrowseFile(); };
     managerButton.onClick = [this] { if (onPluginManager) onPluginManager(); };
@@ -54,6 +52,14 @@ SynthBrowser::~SynthBrowser()
 {
     search.removeKeyListener (this);
     list.removeKeyListener (this);
+}
+
+void SynthBrowser::setPalette (const Palette& p)
+{
+    palette = p;
+    search.setTextToShowWhenEmpty ("Type to search synths...", palette.muted);
+    search.applyColourToAllText (palette.text);
+    repaint();
 }
 
 void SynthBrowser::setEntries (juce::Array<SynthEntry> entries, const juce::String& current, bool canUnload)
@@ -74,11 +80,11 @@ void SynthBrowser::focusSearch()
 //==============================================================================
 void SynthBrowser::paint (juce::Graphics& g)
 {
-    g.fillAll (panelColour);
+    g.fillAll (palette.bg);
 
     if (filtered.isEmpty())
     {
-        g.setColour (juce::Colours::white.withAlpha (0.5f));
+        g.setColour (palette.muted);
         g.setFont (juce::FontOptions (15.0f));
         g.drawFittedText (allEntries.isEmpty()
                               ? "No synths found.\nDrag a .vst3 file here, browse for one, or scan in the plugin manager."
@@ -94,7 +100,7 @@ void SynthBrowser::resized()
     search.setBounds (area.removeFromTop (36));
     area.removeFromTop (8);
 
-    auto buttons = area.removeFromBottom (30);
+    auto buttons = area.removeFromBottom (40);
     area.removeFromBottom (8);
 
     browseButton.setBounds (buttons.removeFromLeft (140));
@@ -121,7 +127,7 @@ void SynthBrowser::paintListBoxItem (int row, juce::Graphics& g, int width, int 
     const auto& entry = filtered.getReference (row);
     auto bounds = juce::Rectangle<int> (width, height).reduced (2, 1);
 
-    g.setColour (selected ? accentColour.withAlpha (0.22f) : rowColour);
+    g.setColour (selected ? palette.accent.withAlpha (0.22f) : palette.keyWhite);
     g.fillRoundedRectangle (bounds.toFloat(), 4.0f);
 
     bounds.reduce (12, 0);
@@ -132,16 +138,16 @@ void SynthBrowser::paintListBoxItem (int row, juce::Graphics& g, int width, int 
     if (entry.recent)                 tags.add ("recent");
 
     g.setFont (juce::FontOptions (12.0f));
-    g.setColour (accentColour.withAlpha (0.8f));
+    g.setColour (palette.accent);
     g.drawText (tags.joinIntoString ("  "), bounds.removeFromRight (120), juce::Justification::centredRight);
 
-    g.setColour (juce::Colours::white);
+    g.setColour (palette.text);
     g.setFont (juce::FontOptions (15.0f, juce::Font::bold));
     const auto nameWidth = juce::jmin (bounds.getWidth(),
                                        juce::GlyphArrangement::getStringWidthInt (g.getCurrentFont(), entry.name) + 16);
     g.drawText (entry.name, bounds.removeFromLeft (nameWidth), juce::Justification::centredLeft, true);
 
-    g.setColour (juce::Colours::white.withAlpha (0.45f));
+    g.setColour (palette.muted);
     g.setFont (juce::FontOptions (13.0f));
     g.drawText (entry.vendor, bounds, juce::Justification::centredLeft, true);
 }

@@ -18,6 +18,8 @@ struct Note
     float velocity = 0.8f; ///< 0..1
 
     double getEnd() const noexcept { return start + length; }
+
+    bool operator== (const Note&) const = default;
 };
 
 enum class PlaybackMode
@@ -35,6 +37,8 @@ struct TriggerCue
     int key = anyKey;   ///< 触发键（MIDI 音高）；anyKey 表示任意键
     double start = 0.0;
     double end = 0.0;   ///< end <= start 时表示"到内容结尾"（按小节取整）
+
+    bool operator== (const TriggerCue&) const = default;
 };
 
 /** 一个 Curvable 实例的全部编辑内容。只在消息线程上修改。 */
