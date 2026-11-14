@@ -39,6 +39,14 @@ void CurvableLookAndFeel::setPalette (const Palette& p)
     setColour (juce::TooltipWindow::backgroundColourId, p.bg);
     setColour (juce::TooltipWindow::textColourId, p.text);
     setColour (juce::TooltipWindow::outlineColourId, p.lineStrong);
+    setColour (juce::Slider::thumbColourId, p.accent);
+    setColour (juce::Slider::trackColourId, p.accent.withAlpha (0.75f));
+    setColour (juce::Slider::backgroundColourId, p.lineStrong);
+    setColour (juce::Slider::textBoxTextColourId, p.text);
+    setColour (juce::Slider::textBoxBackgroundColourId, juce::Colours::transparentBlack);
+    setColour (juce::Slider::textBoxOutlineColourId, juce::Colours::transparentBlack);
+    setColour (juce::Slider::textBoxHighlightColourId, p.accent.withAlpha (0.3f));
+    setColour (juce::Label::textColourId, p.text);
 }
 
 void CurvableLookAndFeel::drawButtonBackground (juce::Graphics& g, juce::Button& button, const juce::Colour&,
@@ -125,6 +133,16 @@ juce::Font CurvableLookAndFeel::getTextButtonFont (juce::TextButton& button, int
 {
     const bool bold = button.getToggleState() && styleOf (button) == "segment";
     return juce::FontOptions (14.0f, bold ? juce::Font::bold : juce::Font::plain);
+}
+
+void CurvableLookAndFeel::drawCallOutBoxBackground (juce::CallOutBox&, juce::Graphics& g, const juce::Path& path, juce::Image&)
+{
+    g.setColour (palette.shadowDark.withAlpha (palette.isDark ? 0.5f : 0.25f));
+    g.fillPath (path, juce::AffineTransform::translation (0.0f, 3.0f));
+    g.setColour (palette.bg);
+    g.fillPath (path);
+    g.setColour (palette.lineStrong);
+    g.strokePath (path, juce::PathStrokeType (1.0f));
 }
 
 void CurvableLookAndFeel::drawPopupMenuBackground (juce::Graphics& g, int width, int height)

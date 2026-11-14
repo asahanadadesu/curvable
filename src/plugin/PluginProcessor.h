@@ -75,6 +75,9 @@ public:
     /** 界面用：当前播放位置（拍）；没有在播放时返回负数。 */
     double getPlayheadBeat() const noexcept { return playheadBeat.load(); }
 
+    /** 宿主最近一次报告的速度（BPM）；界面用来显示以 Hz 计的颤音。 */
+    double getHostBpm() const noexcept { return hostBpm.load(); }
+
 private:
     void changeListenerCallback (juce::ChangeBroadcaster*) override;
     void timerCallback() override;
@@ -90,6 +93,7 @@ private:
     std::atomic<PlaybackMode> playbackMode { PlaybackMode::automatic };
     std::atomic<bool> stateChanged { false };
     std::atomic<double> playheadBeat { -1.0 };
+    std::atomic<double> hostBpm { 120.0 };
 
     juce::UndoManager undoManager { 0, 200 };
 

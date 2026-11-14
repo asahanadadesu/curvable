@@ -103,6 +103,9 @@ void CurvableProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mi
 
             if (const auto bpm = position->getBpm())
                 transport.bpm = *bpm;
+
+            if (transport.bpm > 0.0 && std::isfinite (transport.bpm))
+                hostBpm = transport.bpm;
         }
     }
 

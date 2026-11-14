@@ -15,6 +15,7 @@ namespace
 void PlaybackEngine::prepare (double newSampleRate)
 {
     sampleRate = newSampleRate > 0.0 ? newSampleRate : 44100.0;
+    player.setSampleRate (sampleRate);
 }
 
 void PlaybackEngine::reset (MidiEventList& out)

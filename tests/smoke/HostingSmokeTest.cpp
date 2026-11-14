@@ -231,6 +231,33 @@ int main (int argc, char* argv[])
                 hosted.process (buffer, none.data(), (int) none.size(), nullptr, false);
             }
 
+            // 弯音只属于收到它的实例：主实例收到的弯音（音源内部常映射成参数）不能被转发给副本
+            {
+                hosted.syncClones();
+                std::array<juce::MidiBuffer, 3> bendOnly;
+                hosted.process (buffer, bendOnly.data(), (int) bendOnly.size(), nullptr, false);
+
+                // 刚加载后的一小段时间内参数变化本来就会被忽略，等它过去
+                juce::MessageManager::getInstance()->runDispatchLoopUntil (1700);
+
+                int forwarded = 0;
+                hosted.onUserParameterChange = [&] (int, float) { ++forwarded; };
+
+                for (int i = 0; i < 8; ++i)
+                {
+                    bendOnly[0].addEvent (juce::MidiMessage::pitchWheel (1, 2000 + i * 1500), 0);
+                    hosted.process (buffer, bendOnly.data(), (int) bendOnly.size(), nullptr, false);
+                }
+
+                juce::MessageManager::getInstance()->runDispatchLoopUntil (200);
+                hosted.onUserParameterChange = nullptr;
+                check (forwarded == 0, "pitch bend on one copy is not treated as a knob change ("
+                                           + juce::String (forwarded) + " forwarded)");
+
+                bendOnly[0].addEvent (juce::MidiMessage::pitchWheel (1, 8192), 0);
+                hosted.process (buffer, bendOnly.data(), (int) bendOnly.size(), nullptr, false);
+            }
+
             hosted.syncClones();
             check (true, "copies synced from the main instance");
 

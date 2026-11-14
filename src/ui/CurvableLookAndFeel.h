@@ -25,6 +25,7 @@ public:
     juce::Font getTextButtonFont (juce::TextButton&, int buttonHeight) override;
 
     void drawPopupMenuBackground (juce::Graphics&, int width, int height) override;
+    void drawCallOutBoxBackground (juce::CallOutBox&, juce::Graphics&, const juce::Path&, juce::Image&) override;
 
     void drawScrollbar (juce::Graphics&, juce::ScrollBar&, int x, int y, int width, int height,
                         bool isScrollbarVertical, int thumbStartPosition, int thumbSize,

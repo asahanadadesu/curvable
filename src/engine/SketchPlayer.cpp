@@ -95,12 +95,12 @@ void SketchPlayer::sendWheel (int value, int sampleOffset, MidiEventList& out)
 
 int SketchPlayer::wheelValueAt (const ScheduledNote& note, double beat) const noexcept
 {
-    if (note.curve.points.empty())
+    if (note.curve.isFlat())
         return 8192;
 
     const auto t = std::clamp (beat - note.start, 0.0, note.end - note.start);
     const auto range = schedule != nullptr ? schedule->bendRange : 2.0;
-    return centsToPitchBend (note.curve.evaluate (t) * 100.0, range).value;
+    return centsToPitchBend (note.curve.evaluate (t, note.end - note.start, secondsPerBeat) * 100.0, range).value;
 }
 
 void SketchPlayer::renderBends (double beatFrom, double beatTo, double from, double sampleAtFrom,
@@ -108,7 +108,7 @@ void SketchPlayer::renderBends (double beatFrom, double beatTo, double from, dou
 {
     const auto* owner = findWheelOwner();
 
-    if (owner == nullptr || owner->note == nullptr || owner->note->curve.points.empty())
+    if (owner == nullptr || owner->note == nullptr || owner->note->curve.isFlat())
         return;
 
     const auto firstSample = std::max (blockStart, toSampleIndex (sampleAtFrom + (beatFrom - from) * samplesPerBeat));
@@ -155,6 +155,8 @@ void SketchPlayer::render (double from, double to, double sampleAtFrom, int bloc
 {
     if (to <= from || blockEnd <= blockStart)
         return;
+
+    secondsPerBeat = samplesPerBeat / sampleRate;
 
     actions.clear();
 

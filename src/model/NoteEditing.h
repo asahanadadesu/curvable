@@ -72,10 +72,39 @@ int insertCurvePoint (PitchCurve&, double time, double semitones);
 /** 移动节点：time 夹在相邻节点之间以及 [0, length] 之内（节点顺序不会改变）。 */
 void moveCurvePoint (PitchCurve&, int index, double time, double semitones, double length);
 
-/** 删除节点；剩下的节点全为 0 偏移时清空曲线（等同于不弯音）。 */
+/** 删除节点。其余节点保留（即使都是 0 偏移）。 */
 void removeCurvePoint (PitchCurve&, int index);
 
 /** 改变 index 到下一个节点之间这一段的弯曲程度（夹在 -1..1）。 */
 void setCurveTension (PitchCurve&, int index, float tension);
+
+/** 常用的音高手法。音头类（scoop、overshoot）只替换音头一段，音尾类（fall、doit）只替换音尾一段，
+    所以可以组合（例如先 scoop 再 fall）；bendRelease 替换整条主曲线；clear 去掉主曲线和颤音。
+    幅度不超过 bendRange。颤音不受影响（clear 除外）。 */
+enum class Shape { scoop, overshoot, fall, doit, bendRelease, clear };
+
+void applyShape (PitchCurve&, Shape, double noteLength, double bendRange);
+
+//==============================================================================
+// 颤音
+
+/** 给 segment（起点节点的下标）这一段加上或去掉颤音。整个音符的颤音会先换成按段的。 */
+void setSegmentVibrato (PitchCurve&, int segment, bool on);
+
+/** 整个音符加上或去掉颤音。 */
+void setWholeNoteVibrato (PitchCurve&, bool on);
+
+/** 去掉所有颤音（参数保留，再次加上时沿用）。 */
+void removeVibrato (PitchCurve&);
+
+/** 切换颤音速度是否跟随曲速，尽量保持听起来的速度不变。 */
+void setVibratoSync (Vibrato&, bool sync, double secondsPerBeat);
+
+/** 跟随曲速时可选的速度（每拍周期数）和名字。 */
+inline constexpr double vibratoSyncRates[] = { 1.0, 2.0, 3.0, 4.0, 6.0, 8.0 };
+inline constexpr const char* vibratoSyncNames[] = { "1/4", "1/8", "1/8T", "1/16", "1/16T", "1/32" };
+
+/** 最接近 cyclesPerBeat 的可选速度的下标。 */
+int nearestVibratoSyncIndex (double cyclesPerBeat) noexcept;
 
 } // namespace curvable::editing

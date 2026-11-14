@@ -97,16 +97,18 @@ TEST_CASE ("moving a point keeps the order and stays inside the note", "[curve][
     CHECK (c.points[0].time == 0.0);
 }
 
-TEST_CASE ("removing points clears a curve that no longer bends", "[curve][editing]")
+TEST_CASE ("removing a point keeps the others even when the note no longer bends", "[curve][editing]")
 {
     PitchCurve c;
     c.points = { { 0.0, 0.0 }, { 1.0, 2.0 }, { 2.0, 0.0 } };
 
-    editing::removeCurvePoint (c, 0);
-    CHECK (c.points.size() == 2);
+    editing::removeCurvePoint (c, 1);
+    REQUIRE (c.points.size() == 2);
+    CHECK (c.pointsFlat());
+    CHECK (c.isFlat());
 
     editing::removeCurvePoint (c, 0);
-    CHECK (c.points.empty());
+    CHECK (c.points.size() == 1);
 }
 
 TEST_CASE ("curves and bend range survive serialisation", "[curve][serializer]")

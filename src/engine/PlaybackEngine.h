@@ -17,6 +17,11 @@ public:
             players[(std::size_t) v].setVoice (v);
     }
 
+    void setSampleRate (double sr) noexcept
+    {
+        for (auto& p : players) p.setSampleRate (sr);
+    }
+
     void setSchedule (const Schedule* s, double beat, int offset, MidiEventList& out)
     {
         for (auto& p : players) p.setSchedule (s, beat, offset, out);

@@ -24,6 +24,13 @@ namespace
         const juce::Identifier offset   { "st" };
         const juce::Identifier tension  { "tension" };
         const juce::Identifier bendRange { "bendRange" };
+        const juce::Identifier vibrato  { "Vibrato" };
+        const juce::Identifier depth    { "depth" };
+        const juce::Identifier rate     { "rate" };
+        const juce::Identifier sync     { "sync" };
+        const juce::Identifier fade     { "fade" };
+        const juce::Identifier wholeNote { "wholeNote" };
+        const juce::Identifier vib      { "vib" };
     }
 
     // 枚举按名字保存，以后调整枚举顺序也不会读错
@@ -77,7 +84,22 @@ juce::ValueTree ProjectSerializer::toValueTree (const Project& project)
             if (p.tension != 0.0f)
                 point.setProperty (ids::tension, p.tension, nullptr);
 
+            if (p.vibrato)
+                point.setProperty (ids::vib, true, nullptr);
+
             note.appendChild (point, nullptr);
+        }
+
+        // 颤音参数在去掉颤音后也保存（再次加上时沿用）；从没改过的默认值不保存
+        if (const auto& v = n.curve.vibrato; ! (v == Vibrato {}))
+        {
+            juce::ValueTree vib (ids::vibrato);
+            vib.setProperty (ids::wholeNote, v.wholeNote, nullptr);
+            vib.setProperty (ids::depth, v.depth, nullptr);
+            vib.setProperty (ids::rate, v.rate, nullptr);
+            vib.setProperty (ids::sync, v.sync, nullptr);
+            vib.setProperty (ids::fade, v.fade, nullptr);
+            note.appendChild (vib, nullptr);
         }
 
         tree.appendChild (note, nullptr);
@@ -129,7 +151,19 @@ std::optional<Project> ProjectSerializer::fromValueTree (const juce::ValueTree& 
                 if (pointTree.hasType (ids::point))
                     n.curve.points.push_back ({ (double) pointTree.getProperty (ids::time, 0.0),
                                                 (double) pointTree.getProperty (ids::offset, 0.0),
-                                                (float) (double) pointTree.getProperty (ids::tension, 0.0) });
+                                                (float) (double) pointTree.getProperty (ids::tension, 0.0),
+                                                (bool) pointTree.getProperty (ids::vib, false) });
+
+            if (const auto vib = child.getChildWithName (ids::vibrato); vib.isValid())
+            {
+                const Vibrato defaults;
+                auto& v = n.curve.vibrato;
+                v.wholeNote = vib.getProperty (ids::wholeNote, false);
+                v.depth     = vib.getProperty (ids::depth, defaults.depth);
+                v.rate      = vib.getProperty (ids::rate, defaults.rate);
+                v.sync      = vib.getProperty (ids::sync, false);
+                v.fade      = vib.getProperty (ids::fade, defaults.fade);
+            }
 
             n.curve.normalise();
             project.notes.push_back (n);

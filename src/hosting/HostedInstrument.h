@@ -204,6 +204,12 @@ private:
         explicit ChangeWatcher (HostedInstrument& o) : owner (o) {}
         void audioProcessorParameterChanged (juce::AudioProcessor*, int index, float value) override
         {
+            // 音源正在处理音频时发生的变化来自 MIDI，而不是用户：VST3 音源通常把弯音、CC 映射成参数，
+            // JUCE 在把 MIDI 交给音源时会报告这些参数的变化。不能转发给副本（每个副本有自己的弯音），
+            // 也不算用户的改动
+            if (isInsideProcessBlock())
+                return;
+
             owner.forwardParameter (index, value);
             owner.noteUserChange();
 
@@ -225,6 +231,9 @@ private:
     };
 
     void noteUserChange() noexcept;
+
+    /** 当前线程是否正在调用某个被托管插件的 processBlock。 */
+    static bool isInsideProcessBlock() noexcept;
 
     ChangeWatcher changeWatcher { *this };
     std::atomic<bool> userChanged { false };

@@ -76,6 +76,9 @@ class SketchPlayer
 public:
     SketchPlayer();
 
+    /** 用于以 Hz 计的颤音速率。 */
+    void setSampleRate (double sr) noexcept { sampleRate = sr > 0.0 ? sr : 44100.0; }
+
     /** 只播放分配到这个声部的音符。 */
     void setVoice (int v) noexcept { voice = v; }
     int getVoice() const noexcept { return voice; }
@@ -147,6 +150,8 @@ private:
     int pitchCount[128] {};
 
     int voice = 0;
+    double sampleRate = 44100.0;
+    double secondsPerBeat = 0.5; ///< 最近一次 render 时的速度
     NoteId wheelOwner = 0;
     int lastWheel = 8192;
     std::uint64_t activationCounter = 0;

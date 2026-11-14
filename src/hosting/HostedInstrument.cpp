@@ -42,6 +42,16 @@ HostedInstrument::~HostedInstrument()
         c->releaseResources();
 }
 
+namespace
+{
+    thread_local bool insideProcessBlock = false;
+}
+
+bool HostedInstrument::isInsideProcessBlock() noexcept
+{
+    return insideProcessBlock;
+}
+
 void HostedInstrument::noteUserChange() noexcept
 {
     // 插件加载或恢复状态后，常常会异步发出一些变化通知，这些不算用户的改动
@@ -710,7 +720,10 @@ void HostedInstrument::process (juce::AudioBuffer<float>& output, juce::MidiBuff
         if (nonRealtimeChanged)
             plugin->setNonRealtime (isNonRealtime);
 
-        plugin->processBlock (scratch, events);
+        {
+            const juce::ScopedValueSetter<bool> svs (insideProcessBlock, true);
+            plugin->processBlock (scratch, events);
+        }
         events.clear(); // 音源可能写入了它自己输出的 MIDI
 
         // 空闲计时：没有按住的音符、输出也静音了，累计够久就暂停（主实例与导出时除外）
