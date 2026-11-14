@@ -312,11 +312,8 @@ void CurvableEditor::loadPluginFile (const juce::File& file)
 
         if (instruments.isEmpty())
         {
-            const bool blocked = self->context.isBlocked (file);
-            self->showMessage (blocked ? file.getFileName() + " failed during an earlier scan and is blocked. "
-                                         "You can unblock it in the plugin manager."
-                                       : file.getFileName() + " does not contain a synth (instrument) plugin.",
-                               true);
+            self->showMessage ("Could not load a synth from " + file.getFileName()
+                                   + ". It may not be an instrument, or it failed to start.", true);
             return;
         }
 

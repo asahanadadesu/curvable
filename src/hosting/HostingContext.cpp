@@ -27,7 +27,12 @@ namespace
 }
 
 HostingContext::HostingContext()
-    : settings (std::make_unique<juce::PropertiesFile> (makeSettingsOptions()))
+    : HostingContext (makeSettingsOptions().getDefaultFile())
+{
+}
+
+HostingContext::HostingContext (const juce::File& settingsFile)
+    : settings (std::make_unique<juce::PropertiesFile> (settingsFile, makeSettingsOptions()))
 {
     juce::addDefaultFormatsToManager (formatManager);
 
@@ -111,6 +116,10 @@ juce::Array<juce::PluginDescription> HostingContext::addPluginFile (const juce::
     const auto path = findOutermostBundle (file).getFullPathName();
     juce::Array<juce::PluginDescription> instruments;
 
+    // 用户主动选择了这个插件：屏蔽记录只针对批量扫描（扫描中途失败、超时或被中断都会留下记录），
+    // 这里清除它再试一次。若仍然失败，下面的读取会返回空结果。
+    knownPlugins.removeFromBlacklist (path);
+
     for (auto* format : formatManager.getFormats())
     {
         if (! format->fileMightContainThisPluginType (path))
@@ -125,11 +134,6 @@ juce::Array<juce::PluginDescription> HostingContext::addPluginFile (const juce::
     }
 
     return instruments;
-}
-
-bool HostingContext::isBlocked (const juce::File& file) const
-{
-    return knownPlugins.getBlacklistedFiles().contains (findOutermostBundle (file).getFullPathName());
 }
 
 //==============================================================================

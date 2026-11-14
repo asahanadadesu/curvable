@@ -77,11 +77,17 @@ int main (int argc, char* argv[])
     const juce::String pluginPath = juce::CharPointer_UTF8 (argv[1]);
     std::cout << "Plugin: " << pluginPath << std::endl;
 
-    HostingContext context;
+    // 使用临时设置文件，不影响用户自己的插件列表
+    const juce::TemporaryFile tempSettings ("curvable-smoke.settings");
+    HostingContext context (tempSettings.getFile());
 
     // 1. 读取插件描述（与拖拽加载走同一条路径）
     const juce::File pluginFile (pluginPath);
+    // 模拟"之前的批量扫描把它屏蔽了"：主动读取时应忽略屏蔽记录
+    context.knownPlugins.addToBlacklist (pluginFile.getFullPathName());
     const auto instruments = context.addPluginFile (pluginFile);
+    check (! context.knownPlugins.getBlacklistedFiles().contains (pluginFile.getFullPathName()),
+           "explicit read clears a stale block from an earlier scan");
     const auto* instrument = instruments.isEmpty() ? nullptr : &instruments.getReference (0);
 
     check (instrument != nullptr, "plugin file contains an instrument");

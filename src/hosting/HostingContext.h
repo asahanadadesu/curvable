@@ -28,6 +28,9 @@ class HostingContext final : private juce::ChangeListener
 {
 public:
     HostingContext();
+
+    /** 使用指定的设置文件（测试用，避免改动用户自己的设置）。 */
+    explicit HostingContext (const juce::File& settingsFile);
     ~HostingContext() override;
 
     juce::AudioPluginFormatManager formatManager;
@@ -49,11 +52,9 @@ public:
 
     /** 读取单个插件文件，把其中的插件加入已扫描列表，并返回其中的乐器。
         用于拖拽或手动选择文件，无需完整扫描。会加载该插件，可能耗时一两秒。
-        若拖入的是 VST3 包内部的文件，会自动定位到包本身。 */
+        若拖入的是 VST3 包内部的文件，会自动定位到包本身。
+        会忽略批量扫描留下的屏蔽记录：用户主动选择的插件总是重新尝试。 */
     juce::Array<juce::PluginDescription> addPluginFile (const juce::File&);
-
-    /** 该插件文件是否因之前扫描失败而被屏蔽。 */
-    bool isBlocked (const juce::File&) const;
 
     /** 把拖入的文件换算成插件文件：FL Studio 浏览器里的 .fst 会通过插件数据库找到对应的插件；
         其他文件原样返回。无法换算时返回空 File。 */
