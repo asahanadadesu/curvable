@@ -65,6 +65,7 @@ juce_add_plugin(Curvable
 # 依赖 JUCE 的模型代码（插件本体与单元测试共用）
 set(CURVABLE_JUCE_MODEL_SOURCES
     ${PROJECT_SOURCE_DIR}/src/model/ProjectSerializer.cpp
+    ${PROJECT_SOURCE_DIR}/src/model/CurvePresetLibrary.cpp
 )
 
 # 托管其他插件的代码（插件本体与托管冒烟测试共用）

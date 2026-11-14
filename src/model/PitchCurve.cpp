@@ -27,7 +27,7 @@ double Vibrato::envelope (double x, double runLength) const noexcept
     if (x <= 0.0 || x >= runLength)
         return 0.0;
 
-    const auto in = fade > 0.0 ? std::min (1.0, x / fade) : 1.0;
+    const auto in = shape == Shape::sine && fade > 0.0 ? std::min (1.0, x / fade) : 1.0;
     const auto release = std::min (maxRelease, runLength * 0.25);
     const auto out = release > 0.0 ? std::min (1.0, (runLength - x) / release) : 1.0;
     return in * out;
@@ -37,17 +37,57 @@ double Vibrato::evaluate (double x, double runLength, double secondsPerBeat) con
 {
     const auto env = envelope (x, runLength);
 
-    if (env <= 0.0 || depth <= 0.0)
+    if (env <= 0.0 || depth == 0.0)
         return 0.0;
 
-    return depth * env * std::sin (twoPi * x / beatsPerCycle (secondsPerBeat));
+    const auto cycles = x / beatsPerCycle (secondsPerBeat);
+
+    if (shape == Shape::trill)
+        return depth * env * trillWave (cycles - std::floor (cycles));
+
+    return depth * env * std::sin (twoPi * cycles);
+}
+
+double Vibrato::trillWave (double phase) noexcept
+{
+    constexpr double edge = 0.06; // 切换用时（周期的比例），避免音高瞬间跳变产生咔哒声
+
+    auto smooth = [] (double t) { t = std::clamp (t, 0.0, 1.0); return t * t * (3.0 - 2.0 * t); };
+
+    if (phase < 0.5 - edge) return 0.0;
+    if (phase < 0.5)        return smooth ((phase - (0.5 - edge)) / edge);
+    if (phase < 1.0 - edge) return 1.0;
+    return 1.0 - smooth ((phase - (1.0 - edge)) / edge);
+}
+
+void Vibrato::setShape (Shape newShape)
+{
+    if (newShape == shape)
+        return;
+
+    shape = newShape;
+    const Vibrato defaults;
+
+    if (shape == Shape::trill)
+    {
+        depth = 2.0; // 上方全音
+        sync = true;
+        rate = 4.0;  // 每拍 4 个来回 = 每拍交替 8 次
+    }
+    else
+    {
+        depth = defaults.depth;
+        sync = defaults.sync;
+        rate = defaults.rate;
+    }
 }
 
 void Vibrato::normalise()
 {
     auto finiteOr = [] (double v, double fallback) { return std::isfinite (v) ? v : fallback; };
 
-    depth = std::clamp (finiteOr (depth, 0.4), 0.0, 12.0);
+    depth = shape == Shape::trill ? std::clamp (finiteOr (depth, 2.0), -12.0, 12.0)
+                                  : std::clamp (std::abs (finiteOr (depth, 0.4)), 0.0, 12.0);
     rate = sync ? std::clamp (finiteOr (rate, 2.0), 0.25, 16.0) : std::clamp (finiteOr (rate, 5.5), 0.1, 20.0);
     fade = std::max (0.0, finiteOr (fade, 0.0));
 }
@@ -73,7 +113,7 @@ bool PitchCurve::hasSegmentVibrato() const noexcept
 
 bool PitchCurve::hasVibrato() const noexcept
 {
-    return vibrato.depth > 0.0 && vibrato.rate > 0.0 && (vibrato.wholeNote || hasSegmentVibrato());
+    return vibrato.depth != 0.0 && vibrato.rate > 0.0 && (vibrato.wholeNote || hasSegmentVibrato());
 }
 
 bool PitchCurve::isFlat() const noexcept
@@ -95,7 +135,7 @@ int PitchCurve::segmentAt (double time) const noexcept
 //==============================================================================
 bool PitchCurve::findVibratoRun (double time, double length, Run& run) const noexcept
 {
-    if (vibrato.depth <= 0.0 || vibrato.rate <= 0.0)
+    if (vibrato.depth == 0.0 || vibrato.rate <= 0.0)
         return false;
 
     if (vibrato.wholeNote)
@@ -150,7 +190,7 @@ std::vector<PitchCurve::Run> PitchCurve::getVibratoRuns (double length) const
 {
     std::vector<Run> runs;
 
-    if (vibrato.depth <= 0.0 || vibrato.rate <= 0.0)
+    if (vibrato.depth == 0.0 || vibrato.rate <= 0.0)
         return runs;
 
     if (vibrato.wholeNote)
@@ -247,9 +287,9 @@ double PitchCurve::getMaxAbsOffset (double length) const noexcept
         if (p.time >= 0.0 && p.time <= length)
             result = std::max (result, std::abs (p.semitones));
 
-    // 颤音：保守地直接加上深度
+    // 颤音：保守地直接加上深度（trill 的音程可能为负）
     if (! getVibratoRuns (length).empty())
-        result += vibrato.depth;
+        result += std::abs (vibrato.depth);
 
     return result;
 }

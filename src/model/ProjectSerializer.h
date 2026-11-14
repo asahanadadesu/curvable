@@ -22,6 +22,10 @@ struct ProjectSerializer
 
     /** 类型不对或版本比当前更新（无法安全读取）时返回 std::nullopt。 */
     static std::optional<Project> fromValueTree (const juce::ValueTree&);
+
+    /** 一条曲线的节点与颤音写入 parent 的子节点 / 从 parent 的子节点读出（音符和曲线预设共用）。 */
+    static void writeCurve (const PitchCurve&, juce::ValueTree& parent);
+    static PitchCurve readCurve (const juce::ValueTree& parent);
 };
 
 } // namespace curvable

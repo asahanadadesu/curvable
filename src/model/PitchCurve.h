@@ -16,12 +16,15 @@ struct CurvePoint
     bool operator== (const CurvePoint&) const = default;
 };
 
-/** 颤音参数（每个音符一组）。颤音出现在哪里由 PitchCurve 决定：整个音符（wholeNote），
-    或者节点之间标了 vibrato 的那些段。相邻的颤音段连成一段，相位连续。 */
+/** 颤音 / 颤音式交替（trill）的参数（每个音符一组）。出现在哪里由 PitchCurve 决定：整个音符（wholeNote），
+    或者节点之间标了 vibrato 的那些段。相邻的段连成一段，相位连续。 */
 struct Vibrato
 {
-    bool wholeNote = false; ///< 整个音符都有颤音（不看节点上的标记）
-    double depth = 0.4;     ///< 峰值（半音）
+    enum class Shape { sine, trill };
+
+    Shape shape = Shape::sine; ///< sine：正弦颤音；trill：在本音与相邻音之间交替
+    bool wholeNote = false;    ///< 整个音符都有（不看节点上的标记）
+    double depth = 0.4;        ///< sine：峰值（半音，≥ 0）；trill：相邻音的音程（半音，可为负 = 下方的音）
     double rate = 5.5;      ///< sync 为 false 时单位是 Hz；为 true 时是每拍的周期数（2 = 八分音符）
     bool sync = false;
     double fade = 0.5;      ///< 每段颤音开头从 0 渐强到完整深度所用的时间（拍）
@@ -29,13 +32,19 @@ struct Vibrato
     /** 一个周期有几拍。 */
     double beatsPerCycle (double secondsPerBeat) const noexcept;
 
-    /** 一段颤音里，距这段开头 x 拍处的包络（0..1）：开头渐强，结尾很快收住（不会在段尾跳变）。 */
+    /** 一段颤音里，距这段开头 x 拍处的包络（0..1）：开头渐强（trill 不渐强），结尾很快收住（不会在段尾跳变）。 */
     double envelope (double x, double runLength) const noexcept;
 
     /** 一段颤音里，距这段开头 x 拍处的偏移（半音）。从相位 0 开始，起振时不会跳变。 */
     double evaluate (double x, double runLength, double secondsPerBeat) const noexcept;
 
     void normalise();
+
+    /** 换成另一种形状，参数换成那种形状的默认值（渐强保留）。 */
+    void setShape (Shape);
+
+    /** trill 的波形（0..1）：前半周期在本音，后半周期在相邻音，切换处有很短的过渡。 */
+    static double trillWave (double phase) noexcept;
 
     bool operator== (const Vibrato&) const = default;
 };

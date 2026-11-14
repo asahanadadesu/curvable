@@ -334,6 +334,7 @@ struct PianoRoll::NoteArea final : public juce::Component
     struct VibratoHandles
     {
         juce::Point<float> shape, fade;
+        bool hasFade = true;  ///< trill 没有渐强
         double runStart = 0.0, runLength = 0.0;
         double peak = 0.0; ///< 波峰相对这一段开头的位置（拍）
     };
@@ -353,16 +354,21 @@ struct PianoRoll::NoteArea final : public juce::Component
             return std::nullopt;
 
         const auto release = std::min (0.125, run.length() * 0.25);
-        const auto k = std::max (0.0, std::ceil (vib.fade / bpc - 0.25));
-        auto peak = (k + 0.25) * bpc;
+        const auto trill = vib.shape == Vibrato::Shape::trill;
+
+        // 颤音：完全起振后的第一个波峰；trill：第一次换到相邻音的正中
+        const auto firstPeak = trill ? 0.75 : 0.25;
+        const auto k = trill ? 0.0 : std::max (0.0, std::ceil (vib.fade / bpc - 0.25));
+        auto peak = (k + firstPeak) * bpc;
 
         if (peak > run.length() - release)
-            peak = std::min (0.25 * bpc, run.length() * 0.5);
+            peak = std::min (firstPeak * bpc, run.length() * 0.5);
 
         const auto& v = owner.view;
         const auto fadeTime = run.start + std::min (vib.fade, run.length());
 
         VibratoHandles h;
+        h.hasFade = ! trill;
         h.runStart = run.start;
         h.runLength = run.length();
         h.peak = peak;
@@ -390,7 +396,7 @@ struct PianoRoll::NoteArea final : public juce::Component
                     if (h->shape.getDistanceFrom (pos) <= 7.0f)
                         return { n.id, -1, -1, 1 };
 
-                    if (h->fade.getDistanceFrom (pos) <= 7.0f)
+                    if (h->hasFade && h->fade.getDistanceFrom (pos) <= 7.0f)
                         return { n.id, -1, -1, 2 };
                 }
             }
@@ -581,9 +587,11 @@ struct PianoRoll::NoteArea final : public juce::Component
 
             auto timeAt = [&] (float x) { return juce::jlimit (run.start, run.end, v.xToBeat (x) - n.start); };
             auto amplitude = [&] (double t) { return (float) (vib.depth * vib.envelope (t - run.start, run.length())) * rh; };
+            const auto trill = vib.shape == Vibrato::Shape::trill;
 
             if (cyclePx < 6.0)
             {
+                // 颤音：上下对称；trill：本音到相邻音之间
                 juce::Path band;
                 band.startNewSubPath (x0, centreY (n, timeAt (x0)));
 
@@ -591,7 +599,7 @@ struct PianoRoll::NoteArea final : public juce::Component
                     band.lineTo (x, centreY (n, timeAt (x)) - amplitude (timeAt (x)));
 
                 for (auto x = x1; x >= x0; x -= 2.0f)
-                    band.lineTo (x, centreY (n, timeAt (x)) + amplitude (timeAt (x)));
+                    band.lineTo (x, centreY (n, timeAt (x)) + (trill ? 0.0f : amplitude (timeAt (x))));
 
                 band.closeSubPath();
                 g.setColour (ink.withAlpha (0.35f));
@@ -600,7 +608,7 @@ struct PianoRoll::NoteArea final : public juce::Component
             }
 
             juce::Path wave;
-            const auto step = (float) juce::jlimit (0.75, 2.0, cyclePx / 10.0);
+            const auto step = (float) juce::jlimit (0.5, 2.0, cyclePx / (trill ? 40.0 : 10.0)); // trill 的切换很陡，采样密一些
             wave.startNewSubPath (x0, centreY (n, timeAt (x0)));
 
             for (auto x = x0 + step; x <= x1; x += step)
@@ -622,9 +630,20 @@ struct PianoRoll::NoteArea final : public juce::Component
     static juce::String formatRate (const Vibrato& vib)
     {
         if (vib.sync)
-            return editing::vibratoSyncNames[editing::nearestVibratoSyncIndex (vib.rate)];
+            return editing::syncRateName (vib);
 
         return juce::String (vib.rate, 1) + " Hz";
+    }
+
+    /** +2 st、-0.25 st 这样的偏移。 */
+    static juce::String formatSemitones (double st)
+    {
+        const auto sign = juce::String (st > 0 ? "+" : "");
+
+        if (std::abs (st - std::round (st)) < 1.0e-6)
+            return sign + juce::String ((int) std::round (st)) + " st";
+
+        return sign + juce::String (st, 2) + " st";
     }
 
     void paintValueLabel (juce::Graphics& g, const juce::String& text, juce::Point<float> centre, juce::Colour colour) const
@@ -660,15 +679,23 @@ struct PianoRoll::NoteArea final : public juce::Component
         g.setColour (shapeActive ? p.warm : p.accent);
         g.fillPath (diamond);
 
-        // 渐强：本体下方的小竖线
-        const auto bar = juce::Rectangle<float> (4.0f, 12.0f).withCentre (h->fade);
-        g.setColour (p.bg);
-        g.fillRoundedRectangle (bar.expanded (1.5f), 2.5f);
-        g.setColour (fadeActive ? p.warm : p.accent);
-        g.fillRoundedRectangle (bar, 2.0f);
+        // 渐强：本体下方的小竖线（trill 没有）
+        if (h->hasFade)
+        {
+            const auto bar = juce::Rectangle<float> (4.0f, 12.0f).withCentre (h->fade);
+            g.setColour (p.bg);
+            g.fillRoundedRectangle (bar.expanded (1.5f), 2.5f);
+            g.setColour (fadeActive ? p.warm : p.accent);
+            g.fillRoundedRectangle (bar, 2.0f);
+        }
 
         if (shapeActive)
-            paintValueLabel (g, juce::String (vib.depth, 2) + " st   " + formatRate (vib), h->shape.translated (0.0f, -16.0f), p.text);
+        {
+            const auto depth = vib.shape == Vibrato::Shape::trill ? "Trill " + formatSemitones (vib.depth)
+                                                                  : juce::String (vib.depth, 2) + " st";
+            const auto above = vib.depth >= 0.0 || vib.shape != Vibrato::Shape::trill;
+            paintValueLabel (g, depth + "   " + formatRate (vib), h->shape.translated (0.0f, above ? -16.0f : 16.0f), p.text);
+        }
 
         if (fadeActive)
             paintValueLabel (g, "Fade in " + juce::String (vib.fade, 2) + " beats", h->fade.translated (0.0f, 18.0f), p.text);
@@ -719,10 +746,7 @@ struct PianoRoll::NoteArea final : public juce::Component
             // 拖动时显示数值
             if (active)
             {
-                const auto st = point.semitones;
-                const auto text = std::abs (st - std::round (st)) < 1.0e-6
-                                      ? juce::String (st > 0 ? "+" : "") + juce::String ((int) std::round (st)) + " st"
-                                      : juce::String (st > 0 ? "+" : "") + juce::String (st, 2) + " st";
+                const auto text = formatSemitones (point.semitones);
 
                 g.setFont (juce::FontOptions (12.0f, juce::Font::bold));
                 const auto box = juce::Rectangle<float> (64.0f, 18.0f).withCentre (pos->translated (0.0f, -16.0f));
@@ -937,12 +961,28 @@ struct PianoRoll::NoteArea final : public juce::Component
                 {
                     const auto peakTime = vibratoRunStart + vibratoCyclesToPeak * vib.beatsPerCycle (secondsPerBeat());
                     const auto baseY = pointY (*n, n->curve.evaluate (peakTime));
-                    auto depth = std::abs ((baseY - e.position.y) / owner.view.rowHeight);
+                    const auto offset = (baseY - e.position.y) / owner.view.rowHeight;
 
-                    if (! noSnap)
-                        depth = std::round (depth * 20.0) / 20.0; // 0.05 半音一档
+                    if (vib.shape == Vibrato::Shape::trill)
+                    {
+                        // trill：相邻音的音程，吸附到半音；拖到本音下方就是下方的音。不能是 0
+                        auto interval = noSnap ? std::round (offset * 20.0) / 20.0 : (double) std::lround (offset);
+                        const auto minimum = noSnap ? 0.05 : 1.0;
 
-                    vib.depth = juce::jlimit (0.05, 12.0, depth);
+                        if (std::abs (interval) < minimum)
+                            interval = offset < 0.0 ? -minimum : minimum;
+
+                        vib.depth = juce::jlimit (-12.0, 12.0, interval);
+                    }
+                    else
+                    {
+                        auto depth = std::abs (offset);
+
+                        if (! noSnap)
+                            depth = std::round (depth * 20.0) / 20.0; // 0.05 半音一档
+
+                        vib.depth = juce::jlimit (0.05, 12.0, depth);
+                    }
                 }
                 else if (vibratoAxis == 1)
                 {
@@ -950,7 +990,7 @@ struct PianoRoll::NoteArea final : public juce::Component
                     const auto bpc = std::max (1.0 / 64.0, t / std::max (0.25, vibratoCyclesToPeak));
 
                     if (vib.sync)
-                        vib.rate = editing::vibratoSyncRates[editing::nearestVibratoSyncIndex (1.0 / bpc)];
+                        vib.rate = editing::snapSyncRate (vib, 1.0 / bpc);
                     else
                         vib.rate = noSnap ? 1.0 / (bpc * secondsPerBeat())
                                           : std::round (10.0 / (bpc * secondsPerBeat())) / 10.0;
@@ -1081,12 +1121,16 @@ struct PianoRoll::NoteArea final : public juce::Component
             return;
 
         const auto& curve = note->curve;
+        const auto& vib = curve.vibrato;
+        const auto isTrill = vib.shape == Vibrato::Shape::trill;
         const auto segment = curve.segmentAt (atBeat - note->start);
-        const auto segmentOn = segment >= 0 && curve.points[(size_t) segment].vibrato && ! curve.vibrato.wholeNote;
+        const auto segmentOn = segment >= 0 && curve.points[(size_t) segment].vibrato && ! vib.wholeNote;
         const auto hasVibrato = curve.hasVibrato();
         const auto targets = owner.selection.count (id) != 0 ? owner.selection : editing::IdSet { id };
+        const auto presets = owner.presetLibrary.load();
 
-        enum { segmentId = 1, wholeId, syncId, removeId, clearId, glideId, shapeBase = 100 };
+        enum { vibSegmentId = 1, vibWholeId, trillSegmentId, trillWholeId, syncId, removeId, clearId, glideId,
+               savePresetId, noPresetsId, shapeBase = 100, presetBase = 1000, deleteBase = 5000 };
 
         juce::PopupMenu menu;
 
@@ -1096,12 +1140,16 @@ struct PianoRoll::NoteArea final : public juce::Component
             menu.addSeparator();
         }
 
-        menu.addSectionHeader ("Vibrato");
-        menu.addItem (segmentId, segment >= 0 ? "Vibrato on this segment" : "Vibrato on this segment (add points first)",
-                      segment >= 0, segmentOn);
-        menu.addItem (wholeId, "Vibrato on whole note", true, curve.vibrato.wholeNote);
-        menu.addItem (syncId, "Lock vibrato speed to tempo", hasVibrato, curve.vibrato.sync);
-        menu.addItem (removeId, "Remove vibrato", hasVibrato);
+        const auto noSegment = segment < 0;
+        menu.addSectionHeader ("Vibrato and trill");
+        menu.addItem (vibSegmentId, noSegment ? "Vibrato on this segment (add points first)" : "Vibrato on this segment",
+                      ! noSegment, segmentOn && ! isTrill);
+        menu.addItem (vibWholeId, "Vibrato on whole note", true, vib.wholeNote && ! isTrill);
+        menu.addItem (trillSegmentId, noSegment ? "Trill on this segment (add points first)" : "Trill on this segment",
+                      ! noSegment, segmentOn && isTrill);
+        menu.addItem (trillWholeId, "Trill on whole note", true, vib.wholeNote && isTrill);
+        menu.addItem (syncId, "Lock speed to tempo", hasVibrato, vib.sync);
+        menu.addItem (removeId, hasVibrato && isTrill ? "Remove trill" : "Remove vibrato", hasVibrato);
         menu.addSeparator();
         menu.addSectionHeader ("Bend");
 
@@ -1117,12 +1165,38 @@ struct PianoRoll::NoteArea final : public juce::Component
         for (int i = 0; i < (int) std::size (shapes); ++i)
             menu.addItem (shapeBase + i, shapes[i].name);
 
+        // 预设：套用到所有选中的音符（按音符长度伸缩）
+        juce::PopupMenu presetMenu;
+        const auto shownPresets = juce::jmin ((int) presets.size(), deleteBase - presetBase);
+
+        for (int i = 0; i < shownPresets; ++i)
+            presetMenu.addItem (presetBase + i, presets[(size_t) i].name);
+
+        if (presets.empty())
+            presetMenu.addItem (noPresetsId, "No presets yet", false);
+
+        presetMenu.addSeparator();
+        presetMenu.addItem (savePresetId, curve.isFlat() ? "Save curve as preset (draw a curve first)" : "Save curve as preset...",
+                            ! curve.isFlat());
+
+        if (! presets.empty())
+        {
+            juce::PopupMenu deleteMenu;
+
+            for (int i = 0; i < shownPresets; ++i)
+                deleteMenu.addItem (deleteBase + i, presets[(size_t) i].name);
+
+            presetMenu.addSubMenu ("Delete preset", deleteMenu);
+        }
+
         menu.addSeparator();
+        menu.addSubMenu ("Presets", presetMenu);
         menu.addItem (clearId, "Clear curve", ! curve.isFlat());
 
         juce::Component::SafePointer<NoteArea> safeThis (this);
 
-        menu.showMenuAsync (juce::PopupMenu::Options().withMousePosition(), [safeThis, id, segment, segmentOn, targets] (int result)
+        menu.showMenuAsync (juce::PopupMenu::Options().withMousePosition(),
+                            [safeThis, id, segment, segmentOn, targets, presets] (int result)
         {
             auto* self = safeThis.getComponent();
 
@@ -1132,6 +1206,7 @@ struct PianoRoll::NoteArea final : public juce::Component
             auto& o = self->owner;
             const auto spb = self->secondsPerBeat();
             const auto range = o.project.bendRange;
+            const auto* clicked = editing::findNote (o.project, id);
 
             auto forTargets = [&] (const juce::String& name, const std::function<void (Note&)>& change)
             {
@@ -1143,6 +1218,21 @@ struct PianoRoll::NoteArea final : public juce::Component
                 });
             };
 
+            if (result >= deleteBase)
+            {
+                const auto& preset = presets[(size_t) (result - deleteBase)];
+                o.presetLibrary.remove (preset.name);
+                o.flashMessage ("Deleted preset \"" + preset.name + "\"");
+                return;
+            }
+
+            if (result >= presetBase)
+            {
+                const auto& preset = presets[(size_t) (result - presetBase)];
+                forTargets ("Apply preset", [&] (Note& n) { editing::applyPreset (n.curve, preset.curve, preset.length, n.length); });
+                return;
+            }
+
             if (result >= shapeBase)
             {
                 static const editing::Shape shapeOrder[] = { editing::Shape::scoop, editing::Shape::overshoot, editing::Shape::bendRelease,
@@ -1152,36 +1242,64 @@ struct PianoRoll::NoteArea final : public juce::Component
                 return;
             }
 
+            const auto clickedShape = clicked != nullptr ? clicked->curve.vibrato.shape : Vibrato::Shape::sine;
+
             switch (result)
             {
                 case glideId:
                     o.glideSelection();
                     break;
 
-                case segmentId:
-                    // 只作用于右键的那个音符（"这一段"只对它有意义）
-                    o.edit ("Change vibrato", [&] (Project& p)
+                case vibSegmentId:
+                case trillSegmentId:
+                {
+                    // 只作用于右键的那个音符（"这一段"只对它有意义）。一个音符只有一种形状：
+                    // 在颤音的音符上选 trill，其他颤音段也一起变成 trill
+                    const auto shape = result == trillSegmentId ? Vibrato::Shape::trill : Vibrato::Shape::sine;
+                    const auto on = ! (segmentOn && clickedShape == shape);
+                    const auto name = shape == Vibrato::Shape::trill ? "Change trill" : "Change vibrato";
+
+                    o.edit (name, [&] (Project& p)
                     {
                         if (auto* n = editing::findNote (p, id))
-                            editing::setSegmentVibrato (n->curve, segment, ! segmentOn);
+                        {
+                            if (on)
+                                n->curve.vibrato.setShape (shape);
+
+                            editing::setSegmentVibrato (n->curve, segment, on);
+                        }
                     });
                     break;
+                }
 
-                case wholeId:
+                case vibWholeId:
+                case trillWholeId:
                 {
-                    const auto* clicked = editing::findNote (o.project, id);
-                    const auto on = clicked == nullptr || ! clicked->curve.vibrato.wholeNote;
-                    forTargets ("Change vibrato", [&] (Note& n) { editing::setWholeNoteVibrato (n.curve, on); });
+                    const auto shape = result == trillWholeId ? Vibrato::Shape::trill : Vibrato::Shape::sine;
+                    const auto on = clicked == nullptr || ! (clicked->curve.vibrato.wholeNote && clickedShape == shape);
+                    const auto name = shape == Vibrato::Shape::trill ? "Change trill" : "Change vibrato";
+
+                    forTargets (name, [&] (Note& n)
+                    {
+                        if (on)
+                            n.curve.vibrato.setShape (shape);
+
+                        editing::setWholeNoteVibrato (n.curve, on);
+                    });
                     break;
                 }
 
                 case syncId:
                 {
-                    const auto* clicked = editing::findNote (o.project, id);
                     const auto sync = clicked == nullptr || ! clicked->curve.vibrato.sync;
                     forTargets ("Change vibrato", [&] (Note& n) { editing::setVibratoSync (n.curve.vibrato, sync, spb); });
                     break;
                 }
+
+                case savePresetId:
+                    if (clicked != nullptr)
+                        o.savePreset (clicked->curve, clicked->length);
+                    break;
 
                 case removeId: forTargets ("Remove vibrato", [] (Note& n) { editing::removeVibrato (n.curve); }); break;
                 case clearId:  forTargets ("Clear curve", [] (Note& n) { n.curve = {}; }); break;
@@ -1630,10 +1748,10 @@ struct PianoRoll::ShortcutsPanel final : public juce::Component
                 { "Drag a small circle", "Change the curve shape" },
                 { "Right-click a point", "Delete it" },
                 { "Double-click a note", "Remove its whole curve" },
-                { "Right-click a note", "Vibrato and ready-made bends" },
+                { "Right-click a note", "Vibrato, trill, bends, presets" },
                 { "G  (2+ notes selected)", "Glide: merge a line or chords into legato notes" },
                 { "Shift+click / Ctrl+drag", "Select several notes" },
-                { "Drag the diamond", "Vibrato depth (up/down), speed (left/right)" },
+                { "Drag the diamond", "Depth or trill note (up/down), speed (left/right)" },
                 { "Drag the bar below", "Vibrato fade-in length" },
             } },
             { "View & tools", {
@@ -1726,13 +1844,152 @@ struct PianoRoll::ShortcutsPanel final : public juce::Component
 };
 
 //==============================================================================
+// 保存曲线预设时输入名字：盖在卷帘上的小卡片。Enter 保存，Esc 或点卡片外面取消
+struct PianoRoll::NamePrompt final : public juce::Component
+{
+    explicit NamePrompt (PianoRoll& o) : owner (o)
+    {
+        editor.setFont (juce::FontOptions (15.0f));
+        editor.setIndents (10, 7);
+        editor.onReturnKey = [this] { confirm(); };
+        editor.onEscapeKey = [this] { close(); };
+        editor.onTextChange = [this] { repaint(); };
+        addAndMakeVisible (editor);
+
+        saveButton.onClick = [this] { confirm(); };
+        cancelButton.onClick = [this] { close(); };
+        addAndMakeVisible (saveButton);
+        addAndMakeVisible (cancelButton);
+    }
+
+    void show (PitchCurve c, double length)
+    {
+        curve = std::move (c);
+        noteLength = length;
+
+        // 默认名字：Curve 1、Curve 2……（跳过已有的）
+        const auto existing = owner.presetLibrary.load();
+        juce::String name;
+
+        for (int i = 1;; ++i)
+        {
+            name = "Curve " + juce::String (i);
+
+            if (std::none_of (existing.begin(), existing.end(), [&] (const CurvePreset& p) { return p.name == name; }))
+                break;
+        }
+
+        editor.setColour (juce::TextEditor::textColourId, owner.palette.text);
+        editor.setText (name, false);
+        editor.selectAll();
+        setVisible (true);
+        toFront (false);
+        editor.grabKeyboardFocus();
+        repaint();
+    }
+
+    juce::Rectangle<float> getCard() const
+    {
+        return juce::Rectangle<float> (380.0f, 156.0f).withCentre (getLocalBounds().toFloat().getCentre());
+    }
+
+    void paint (juce::Graphics& g) override
+    {
+        const auto& p = owner.palette;
+        g.fillAll (p.bg.withAlpha (0.6f));
+
+        const auto card = getCard();
+        neu::raised (g, card, 18.0f, p, 6);
+
+        g.setColour (p.text);
+        g.setFont (juce::FontOptions (16.0f, juce::Font::bold));
+        g.drawText ("Save curve as preset", card.reduced (24.0f, 0.0f).withY (card.getY() + 16.0f).withHeight (24.0f),
+                    juce::Justification::centredLeft);
+
+        // 同名提示：保存会替换
+        const auto name = editor.getText().trim();
+        const auto existing = owner.presetLibrary.contains (name);
+        g.setColour (existing ? p.warm : p.muted);
+        g.setFont (juce::FontOptions (12.0f));
+        g.drawText (existing ? "A preset with this name will be replaced" : "Saved for all projects (stretches to each note)",
+                    card.reduced (24.0f, 0.0f).withY (card.getY() + 84.0f).withHeight (18.0f), juce::Justification::centredLeft);
+    }
+
+    void resized() override
+    {
+        const auto card = getCard().toNearestInt();
+        editor.setBounds (card.getX() + 24, card.getY() + 48, card.getWidth() - 48, 32);
+        auto buttons = juce::Rectangle<int> (card.getX() + 24, card.getBottom() - 46, card.getWidth() - 48, 32);
+        saveButton.setBounds (buttons.removeFromRight (90));
+        buttons.removeFromRight (8);
+        cancelButton.setBounds (buttons.removeFromRight (90));
+    }
+
+    void mouseDown (const juce::MouseEvent& e) override
+    {
+        if (! getCard().contains (e.position))
+            close();
+    }
+
+    bool keyPressed (const juce::KeyPress& key) override
+    {
+        if (key == juce::KeyPress::escapeKey)
+            close();
+
+        return true; // 打开时不把按键交给卷帘
+    }
+
+    void confirm()
+    {
+        const auto name = editor.getText().trim();
+
+        if (name.isEmpty())
+        {
+            editor.grabKeyboardFocus();
+            return;
+        }
+
+        const auto replaced = owner.presetLibrary.contains (name);
+
+        if (owner.presetLibrary.save ({ name, curve, noteLength }))
+            owner.flashMessage ((replaced ? "Replaced preset \"" : "Saved preset \"") + name + "\"");
+        else
+            owner.flashMessage ("Could not save the preset (" + owner.presetLibrary.getFile().getFullPathName() + ")");
+
+        close();
+    }
+
+    void close()
+    {
+        setVisible (false);
+
+        if (owner.isShowing())
+            owner.grabKeyboardFocus();
+    }
+
+    PianoRoll& owner;
+    juce::TextEditor editor;
+    juce::TextButton saveButton { "Save" }, cancelButton { "Cancel" };
+    PitchCurve curve;
+    double noteLength = 1.0;
+};
+
+void PianoRoll::savePreset (const PitchCurve& curve, double noteLength)
+{
+    showShortcuts (false);
+    namePrompt->show (curve, noteLength);
+}
+
+//==============================================================================
 PianoRoll::PianoRoll (CurvableProcessor& p, const Palette& pal)
     : processor (p), palette (pal),
       keyboard (std::make_unique<Keyboard> (*this)),
       ruler (std::make_unique<Ruler> (*this)),
       noteArea (std::make_unique<NoteArea> (*this)),
       velocityLane (std::make_unique<VelocityLane> (*this)),
-      shortcutsPanel (std::make_unique<ShortcutsPanel> (*this))
+      shortcutsPanel (std::make_unique<ShortcutsPanel> (*this)),
+      namePrompt (std::make_unique<NamePrompt> (*this)),
+      presetLibrary (p.getHostingContext().getSettings().getFile().getSiblingFile (CurvePresetLibrary::fileName))
 {
     setWantsKeyboardFocus (true);
 
@@ -1754,6 +2011,7 @@ PianoRoll::PianoRoll (CurvableProcessor& p, const Palette& pal)
     addAndMakeVisible (helpButton);
 
     addChildComponent (shortcutsPanel.get());
+    addChildComponent (namePrompt.get());
 
     for (auto* b : { &drawButton, &selectButton, &curveButton, &sliceButton })
     {
@@ -1847,6 +2105,7 @@ void PianoRoll::resized()
     helpButton.setBounds (bottom.removeFromRight (44).withSizeKeepingCentre (44, 44));
 
     shortcutsPanel->setBounds (getLocalBounds());
+    namePrompt->setBounds (getLocalBounds());
 
     if (! viewInitialised && noteArea->getHeight() > 0)
     {
@@ -1895,7 +2154,7 @@ juce::String PianoRoll::getHint() const
 {
     // 只提示界面上看不出来的操作：工具、吸附、力度、滚动都有可见的控件，完整列表在 ? 里
     if (tool == Tool::curve)
-        return "Click note  Add point    Right-click note  Vibrato, bends    Right-click point  Delete    Alt  No snap";
+        return "Click note  Add point    Right-click note  Vibrato, trill, presets    Right-click point  Delete    Alt  No snap";
 
     if (tool == Tool::slice)
         return "Click a note  Cut it    Drag up or down  Cut several    Alt  No snap";

@@ -2,6 +2,7 @@
 
 #include "model/NoteEditing.h"
 #include "ui/RollView.h"
+#include "model/CurvePresetLibrary.h"
 #include "ui/Theme.h"
 
 #include <juce_gui_basics/juce_gui_basics.h>
@@ -60,6 +61,7 @@ private:
     struct NoteArea;
     struct VelocityLane;
     struct ShortcutsPanel;
+    struct NamePrompt;
 
     void changeListenerCallback (juce::ChangeBroadcaster*) override;
     void timerCallback() override;
@@ -106,6 +108,9 @@ private:
     /** 在底部提示栏显示几秒钟的提醒（例如操作无法完成的原因）。 */
     void flashMessage (const juce::String&);
 
+    /** 问一个名字，把这条曲线存成预设（noteLength：音符长度，套用时按比例伸缩）。 */
+    void savePreset (const PitchCurve&, double noteLength);
+
     void preview (int pitch, float velocity);
 
     juce::Rectangle<int> getGridBounds() const;
@@ -118,6 +123,8 @@ private:
     std::unique_ptr<NoteArea> noteArea;
     std::unique_ptr<VelocityLane> velocityLane;
     std::unique_ptr<ShortcutsPanel> shortcutsPanel;
+    std::unique_ptr<NamePrompt> namePrompt;
+    CurvePresetLibrary presetLibrary;
 
     juce::ScrollBar hScroll { false }, vScroll { true };
 

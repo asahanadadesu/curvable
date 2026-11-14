@@ -786,6 +786,18 @@ void removeVibrato (PitchCurve& c)
     setWholeNoteVibrato (c, false);
 }
 
+void applyPreset (PitchCurve& target, const PitchCurve& preset, double presetLength, double noteLength)
+{
+    const auto scale = presetLength > 0.0 && noteLength > 0.0 ? noteLength / presetLength : 1.0;
+
+    target = preset;
+
+    for (auto& p : target.points)
+        p.time *= scale;
+
+    target.normalise();
+}
+
 int nearestVibratoSyncIndex (double cyclesPerBeat) noexcept
 {
     int best = 0;
@@ -797,6 +809,19 @@ int nearestVibratoSyncIndex (double cyclesPerBeat) noexcept
     return best;
 }
 
+double snapSyncRate (const Vibrato& v, double cyclesPerBeat) noexcept
+{
+    if (v.shape == Vibrato::Shape::trill)
+        return vibratoSyncRates[nearestVibratoSyncIndex (cyclesPerBeat * 2.0)] * 0.5;
+
+    return vibratoSyncRates[nearestVibratoSyncIndex (cyclesPerBeat)];
+}
+
+const char* syncRateName (const Vibrato& v) noexcept
+{
+    return vibratoSyncNames[nearestVibratoSyncIndex (v.shape == Vibrato::Shape::trill ? v.rate * 2.0 : v.rate)];
+}
+
 void setVibratoSync (Vibrato& v, bool sync, double secondsPerBeat)
 {
     if (sync == v.sync)
@@ -804,7 +829,7 @@ void setVibratoSync (Vibrato& v, bool sync, double secondsPerBeat)
 
     const auto cyclesPerBeat = 1.0 / std::max (1.0e-6, v.beatsPerCycle (secondsPerBeat));
     v.sync = sync;
-    v.rate = sync ? vibratoSyncRates[nearestVibratoSyncIndex (cyclesPerBeat)]
+    v.rate = sync ? snapSyncRate (v, cyclesPerBeat)
                   : std::round (cyclesPerBeat / std::max (1.0e-6, secondsPerBeat) * 10.0) / 10.0;
     v.normalise();
 }

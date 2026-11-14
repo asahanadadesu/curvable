@@ -31,6 +31,7 @@ namespace
         const juce::Identifier fade     { "fade" };
         const juce::Identifier wholeNote { "wholeNote" };
         const juce::Identifier vib      { "vib" };
+        const juce::Identifier shape    { "shape" };
     }
 
     // 枚举按名字保存，以后调整枚举顺序也不会读错
@@ -75,33 +76,7 @@ juce::ValueTree ProjectSerializer::toValueTree (const Project& project)
         note.setProperty (ids::pitch, n.pitch, nullptr);
         note.setProperty (ids::velocity, n.velocity, nullptr);
 
-        for (const auto& p : n.curve.points)
-        {
-            juce::ValueTree point (ids::point);
-            point.setProperty (ids::time, p.time, nullptr);
-            point.setProperty (ids::offset, p.semitones, nullptr);
-
-            if (p.tension != 0.0f)
-                point.setProperty (ids::tension, p.tension, nullptr);
-
-            if (p.vibrato)
-                point.setProperty (ids::vib, true, nullptr);
-
-            note.appendChild (point, nullptr);
-        }
-
-        // 颤音参数在去掉颤音后也保存（再次加上时沿用）；从没改过的默认值不保存
-        if (const auto& v = n.curve.vibrato; ! (v == Vibrato {}))
-        {
-            juce::ValueTree vib (ids::vibrato);
-            vib.setProperty (ids::wholeNote, v.wholeNote, nullptr);
-            vib.setProperty (ids::depth, v.depth, nullptr);
-            vib.setProperty (ids::rate, v.rate, nullptr);
-            vib.setProperty (ids::sync, v.sync, nullptr);
-            vib.setProperty (ids::fade, v.fade, nullptr);
-            note.appendChild (vib, nullptr);
-        }
-
+        writeCurve (n.curve, note);
         tree.appendChild (note, nullptr);
     }
 
@@ -115,6 +90,67 @@ juce::ValueTree ProjectSerializer::toValueTree (const Project& project)
     }
 
     return tree;
+}
+
+void ProjectSerializer::writeCurve (const PitchCurve& curve, juce::ValueTree& parent)
+{
+    for (const auto& p : curve.points)
+    {
+        juce::ValueTree point (ids::point);
+        point.setProperty (ids::time, p.time, nullptr);
+        point.setProperty (ids::offset, p.semitones, nullptr);
+
+        if (p.tension != 0.0f)
+            point.setProperty (ids::tension, p.tension, nullptr);
+
+        if (p.vibrato)
+            point.setProperty (ids::vib, true, nullptr);
+
+        parent.appendChild (point, nullptr);
+    }
+
+    // 颤音参数在去掉颤音后也保存（再次加上时沿用）；从没改过的默认值不保存
+    if (const auto& v = curve.vibrato; ! (v == Vibrato {}))
+    {
+        juce::ValueTree vib (ids::vibrato);
+
+        if (v.shape == Vibrato::Shape::trill)
+            vib.setProperty (ids::shape, "trill", nullptr);
+
+        vib.setProperty (ids::wholeNote, v.wholeNote, nullptr);
+        vib.setProperty (ids::depth, v.depth, nullptr);
+        vib.setProperty (ids::rate, v.rate, nullptr);
+        vib.setProperty (ids::sync, v.sync, nullptr);
+        vib.setProperty (ids::fade, v.fade, nullptr);
+        parent.appendChild (vib, nullptr);
+    }
+}
+
+PitchCurve ProjectSerializer::readCurve (const juce::ValueTree& parent)
+{
+    PitchCurve curve;
+
+    for (const auto& pointTree : parent)
+        if (pointTree.hasType (ids::point))
+            curve.points.push_back ({ (double) pointTree.getProperty (ids::time, 0.0),
+                                      (double) pointTree.getProperty (ids::offset, 0.0),
+                                      (float) (double) pointTree.getProperty (ids::tension, 0.0),
+                                      (bool) pointTree.getProperty (ids::vib, false) });
+
+    if (const auto vib = parent.getChildWithName (ids::vibrato); vib.isValid())
+    {
+        const Vibrato defaults;
+        auto& v = curve.vibrato;
+        v.shape     = vib.getProperty (ids::shape).toString() == "trill" ? Vibrato::Shape::trill : Vibrato::Shape::sine;
+        v.wholeNote = vib.getProperty (ids::wholeNote, false);
+        v.depth     = vib.getProperty (ids::depth, defaults.depth);
+        v.rate      = vib.getProperty (ids::rate, defaults.rate);
+        v.sync      = vib.getProperty (ids::sync, false);
+        v.fade      = vib.getProperty (ids::fade, defaults.fade);
+    }
+
+    curve.normalise();
+    return curve;
 }
 
 std::optional<Project> ProjectSerializer::fromValueTree (const juce::ValueTree& tree)
@@ -147,25 +183,7 @@ std::optional<Project> ProjectSerializer::fromValueTree (const juce::ValueTree& 
             n.pitch    = child.getProperty (ids::pitch, 60);
             n.velocity = (float) (double) child.getProperty (ids::velocity, 0.8);
 
-            for (const auto& pointTree : child)
-                if (pointTree.hasType (ids::point))
-                    n.curve.points.push_back ({ (double) pointTree.getProperty (ids::time, 0.0),
-                                                (double) pointTree.getProperty (ids::offset, 0.0),
-                                                (float) (double) pointTree.getProperty (ids::tension, 0.0),
-                                                (bool) pointTree.getProperty (ids::vib, false) });
-
-            if (const auto vib = child.getChildWithName (ids::vibrato); vib.isValid())
-            {
-                const Vibrato defaults;
-                auto& v = n.curve.vibrato;
-                v.wholeNote = vib.getProperty (ids::wholeNote, false);
-                v.depth     = vib.getProperty (ids::depth, defaults.depth);
-                v.rate      = vib.getProperty (ids::rate, defaults.rate);
-                v.sync      = vib.getProperty (ids::sync, false);
-                v.fade      = vib.getProperty (ids::fade, defaults.fade);
-            }
-
-            n.curve.normalise();
+            n.curve = readCurve (child);
             project.notes.push_back (n);
             maxId = std::max (maxId, n.id);
         }

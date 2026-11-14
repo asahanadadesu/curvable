@@ -16,6 +16,7 @@ target_sources(curvable_tests PRIVATE
     ExpressionTests.cpp
     GlideTests.cpp
     SliceChordTests.cpp
+    TrillPresetTests.cpp
     ${CURVABLE_JUCE_MODEL_SOURCES}
 )
 

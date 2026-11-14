@@ -151,6 +151,10 @@ void setWholeNoteVibrato (PitchCurve&, bool on);
 /** 去掉所有颤音（参数保留，再次加上时沿用）。 */
 void removeVibrato (PitchCurve&);
 
+/** 套用曲线预设：节点按 noteLength / presetLength 伸缩到音符长度，颤音（含形状、范围）照搬，
+    原有的曲线被替换。颤音速度不伸缩。 */
+void applyPreset (PitchCurve& target, const PitchCurve& preset, double presetLength, double noteLength);
+
 /** 切换颤音速度是否跟随曲速，尽量保持听起来的速度不变。 */
 void setVibratoSync (Vibrato&, bool sync, double secondsPerBeat);
 
@@ -160,5 +164,12 @@ inline constexpr const char* vibratoSyncNames[] = { "1/4", "1/8", "1/8T", "1/16"
 
 /** 最接近 cyclesPerBeat 的可选速度的下标。 */
 int nearestVibratoSyncIndex (double cyclesPerBeat) noexcept;
+
+/** 跟随曲速时，把每拍周期数吸附到可选的速度。颤音按一个周期的时值吸附；
+    trill 按每次交替（半个周期）的时值吸附，例如 1/32 = 每个三十二分音符换一次音。 */
+double snapSyncRate (const Vibrato&, double cyclesPerBeat) noexcept;
+
+/** 跟随曲速时速度的名字（颤音：一个周期的时值；trill：每次交替的时值）。 */
+const char* syncRateName (const Vibrato&) noexcept;
 
 } // namespace curvable::editing
