@@ -60,7 +60,7 @@ jobs:
           mkdir -p ~/Library/Audio/Plug-Ins/Components
           cp -R "build/Curvable_artefacts/Release/AU/Curvable.component" ~/Library/Audio/Plug-Ins/Components/
           killall -9 AudioComponentRegistrar || true
-          auval -v aumu Crv1 Crvb
+          auval -v aumu Crvb Ashn
 
       - name: Upload artefacts
         uses: actions/upload-artifact@v4

@@ -37,10 +37,12 @@ endif()
 
 juce_add_plugin(Curvable
     PRODUCT_NAME "Curvable"
-    COMPANY_NAME "Curvable"
-    BUNDLE_ID "io.github.curvable.Curvable"
-    PLUGIN_MANUFACTURER_CODE Crvb
-    PLUGIN_CODE Crv1
+    COMPANY_NAME "asahanada"
+    COMPANY_WEBSITE "https://github.com/asahanadadesu/curvable"
+    BUNDLE_ID "io.github.asahanadadesu.curvable"
+    # 四字符代码一经发布不要再改，否则宿主会把它当成另一个插件，旧工程将找不到它
+    PLUGIN_MANUFACTURER_CODE Ashn
+    PLUGIN_CODE Crvb
     FORMATS ${CURVABLE_FORMATS}
     IS_SYNTH TRUE
     NEEDS_MIDI_INPUT TRUE
