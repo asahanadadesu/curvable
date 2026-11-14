@@ -75,6 +75,36 @@ constexpr double defaultGlideBeats = 0.25;
     至少两个音符；有两个音符起点相同（和弦）时不合并。 */
 GlideResult glideNotes (Project&, const IdSet& ids, double glideBeats = defaultGlideBeats);
 
+/** 和弦之间的滑音（也包括单条旋律）。选中的音符按起点分成若干组（和弦），每一组的每个声部
+    滑到下一组里移动距离最小的音（总移动量最小；相同时更均匀的优先），各自合并成一个连奏音符（glideNotes）。
+    - 下一组的音更少：多出来的声部滑到最近的音上（同音重叠）；
+    - 下一组的音更多：多出来的音单独开始一个新声部。
+    至少两组；每组最多 12 个音。 */
+struct ChordGlideResult
+{
+    enum class Error { none, tooFewNotes, oneChordOnly, chordTooLarge };
+
+    IdSet ids;                 ///< 合并后的音符（以及没有被合并的音符）
+    Error error = Error::none;
+};
+
+ChordGlideResult glideChords (Project&, const IdSet& ids, double glideBeats = defaultGlideBeats);
+
+/** 声部配对（纯函数，便于测试）：from 中每个音高配一个 to 的下标。
+    from 不多于 to 时一对一；多于 to 时 to 的每个音至少配到一次。 */
+std::vector<int> matchVoices (const std::vector<double>& from, const std::vector<double>& to);
+
+//==============================================================================
+// 切开
+
+/** 在 cut（相对音符起点，拍）处把曲线分成两段，切开前后在每个时刻的值都不变（包括弯曲程度）。
+    第二段的时间从 0 开始。 */
+std::pair<PitchCurve, PitchCurve> splitCurve (const PitchCurve&, double cut);
+
+/** 在 atBeat 处切开 ids 中跨过这个位置的音符（离两端都至少 minNoteLength）。
+    后半段的音高改为切点处最接近的半音，曲线相应平移，所以切开后音高完全不变。返回后半段的 id。 */
+IdSet sliceNotes (Project&, const IdSet& ids, double atBeat);
+
 /** 与 [beatStart, beatEnd) × [pitchLow, pitchHigh] 有重叠的音符。 */
 IdSet notesInRange (const Project&, double beatStart, double beatEnd, int pitchLow, int pitchHigh);
 

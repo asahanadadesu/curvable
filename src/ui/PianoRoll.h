@@ -52,7 +52,7 @@ public:
     /** 显示 / 隐藏全部操作说明（也可以按 F1 或 ?）。 */
     void showShortcuts (bool shouldShow);
 
-    enum class Tool { draw, select, curve };
+    enum class Tool { draw, select, curve, slice };
 
 private:
     struct Keyboard;
@@ -121,7 +121,7 @@ private:
 
     juce::ScrollBar hScroll { false }, vScroll { true };
 
-    juce::TextButton drawButton { "Draw" }, selectButton { "Select" }, curveButton { "Curve" };
+    juce::TextButton drawButton { "Draw" }, selectButton { "Select" }, curveButton { "Curve" }, sliceButton { "Slice" };
     juce::TextButton snapButton, bendButton, helpButton { "?" };
 
     RollView view;

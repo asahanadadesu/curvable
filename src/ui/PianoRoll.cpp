@@ -180,7 +180,7 @@ struct PianoRoll::NoteArea final : public juce::Component
 {
     explicit NoteArea (PianoRoll& o) : owner (o) {}
 
-    enum class Mode { none, move, resize, marquee, erase, curvePoint, curveTension, vibratoShape, vibratoFade };
+    enum class Mode { none, move, resize, marquee, erase, curvePoint, curveTension, vibratoShape, vibratoFade, slice };
 
     struct Hit
     {
@@ -540,6 +540,8 @@ struct PianoRoll::NoteArea final : public juce::Component
         if (curveTool && focus != nullptr)
             paintCurvePoints (g, *focus, true);
 
+        paintSliceLine (g);
+
         if (mode == Mode::marquee && ! marquee.isEmpty())
         {
             g.setColour (p.accent.withAlpha (0.12f));
@@ -757,6 +759,16 @@ struct PianoRoll::NoteArea final : public juce::Component
             return;
         }
 
+        // Slice 工具：在这个位置画一条竖线，松开时切开它经过的音符（单击 = 只切鼠标下的音符）
+        if (owner.tool == Tool::slice)
+        {
+            mode = Mode::slice;
+            sliceBeat = sliceBeatAt (e.position.x, e.mods.isAltDown());
+            sliceY0 = sliceY1 = e.position.y;
+            repaint();
+            return;
+        }
+
         if (hit.id != 0)
         {
             if (e.mods.isShiftDown())
@@ -966,8 +978,96 @@ struct PianoRoll::NoteArea final : public juce::Component
                 break;
             }
 
+            case Mode::slice:
+                sliceY1 = e.position.y;
+                repaint();
+                break;
+
             case Mode::none:
                 break;
+        }
+    }
+
+    //==============================================================================
+    // Slice 工具
+
+    double sliceBeatAt (float x, bool noSnap) const
+    {
+        const auto beat = owner.view.xToBeat (x);
+        return noSnap ? beat : editing::snapNearest (beat, owner.grid);
+    }
+
+    /** 竖线 [y0, y1] 在 beat 处经过的音符（按音符本体在这个时刻的位置判断，弯过的音符也算）。 */
+    editing::IdSet notesUnderSlice (double beat, float y0, float y1) const
+    {
+        const auto half = (float) owner.view.rowHeight * 0.5f;
+        const auto top = juce::jmin (y0, y1) - half, bottom = juce::jmax (y0, y1) + half;
+        editing::IdSet ids;
+
+        for (const auto& n : owner.project.notes)
+        {
+            if (beat <= n.start || beat >= n.getEnd())
+                continue;
+
+            const auto y = centreY (n, beat - n.start);
+
+            if (y >= top && y <= bottom)
+                ids.insert (n.id);
+        }
+
+        return ids;
+    }
+
+    void finishSlice()
+    {
+        const auto ids = notesUnderSlice (sliceBeat, sliceY0, sliceY1);
+        const auto beat = sliceBeat;
+
+        if (ids.empty())
+            return;
+
+        editing::IdSet added;
+        owner.edit ("Slice notes", [&] (Project& p) { added = editing::sliceNotes (p, ids, beat); });
+
+        // 选中切开后的两半，方便接着处理
+        auto sel = ids;
+        sel.insert (added.begin(), added.end());
+        owner.setSelection (editing::existingOnly (owner.project, sel));
+    }
+
+    void paintSliceLine (juce::Graphics& g) const
+    {
+        if (owner.tool != Tool::slice || (mode != Mode::slice && hoverSliceBeat < 0.0))
+            return;
+
+        const auto& p = owner.palette;
+        const auto beat = mode == Mode::slice ? sliceBeat : hoverSliceBeat;
+        const auto x = (float) owner.view.beatToX (beat);
+        const float dashes[] = { 4.0f, 3.0f };
+
+        if (mode == Mode::slice)
+        {
+            // 正在拖：实线标出会切到的范围，虚线延伸到整列
+            const auto half = (float) owner.view.rowHeight * 0.5f;
+            const auto top = juce::jmin (sliceY0, sliceY1) - half, bottom = juce::jmax (sliceY0, sliceY1) + half;
+
+            g.setColour (p.warm.withAlpha (0.35f));
+            g.drawDashedLine ({ x, 0.0f, x, (float) getHeight() }, dashes, 2, 1.0f);
+            g.setColour (p.warm);
+            g.fillRect (x - 1.0f, top, 2.0f, bottom - top);
+            return;
+        }
+
+        g.setColour (p.warm.withAlpha (0.55f));
+        g.drawDashedLine ({ x, 0.0f, x, (float) getHeight() }, dashes, 2, 1.2f);
+    }
+
+    void mouseExit (const juce::MouseEvent&) override
+    {
+        if (hoverSliceBeat >= 0.0)
+        {
+            hoverSliceBeat = -1.0;
+            repaint();
         }
     }
 
@@ -992,7 +1092,7 @@ struct PianoRoll::NoteArea final : public juce::Component
 
         if (targets.size() >= 2)
         {
-            menu.addItem (glideId, "Glide into one note (G)");
+            menu.addItem (glideId, "Glide into legato notes (G)");
             menu.addSeparator();
         }
 
@@ -1233,6 +1333,11 @@ struct PianoRoll::NoteArea final : public juce::Component
     {
         switch (mode)
         {
+            case Mode::slice:
+                finishSlice();
+                repaint();
+                break;
+
             case Mode::move:
                 owner.endDrag ("Move notes");
                 break;
@@ -1270,6 +1375,26 @@ struct PianoRoll::NoteArea final : public juce::Component
     void mouseMove (const juce::MouseEvent& e) override
     {
         owner.lastMouseBeat = owner.view.xToBeat (e.position.x);
+
+        if (owner.tool == Tool::slice)
+        {
+            const auto beat = sliceBeatAt (e.position.x, e.mods.isAltDown());
+
+            if (beat != hoverSliceBeat)
+            {
+                hoverSliceBeat = beat;
+                repaint();
+            }
+
+            setMouseCursor (juce::MouseCursor::IBeamCursor);
+            return;
+        }
+
+        if (hoverSliceBeat >= 0.0)
+        {
+            hoverSliceBeat = -1.0;
+            repaint();
+        }
 
         if (owner.tool == Tool::curve)
         {
@@ -1350,6 +1475,10 @@ struct PianoRoll::NoteArea final : public juce::Component
     int curveIndex = -1;        ///< 正在拖动的节点 / 段
     float tensionStart = 0.0f;
     juce::String curveEditName;
+
+    // Slice 工具
+    double sliceBeat = 0.0, hoverSliceBeat = -1.0;
+    float sliceY0 = 0.0f, sliceY1 = 0.0f;
 
     // 拖动颤音手柄
     double vibratoRunStart = 0.0, vibratoRunLength = 0.0, vibratoCyclesToPeak = 0.25;
@@ -1502,7 +1631,7 @@ struct PianoRoll::ShortcutsPanel final : public juce::Component
                 { "Right-click a point", "Delete it" },
                 { "Double-click a note", "Remove its whole curve" },
                 { "Right-click a note", "Vibrato and ready-made bends" },
-                { "G  (2+ notes selected)", "Glide: merge into one legato note" },
+                { "G  (2+ notes selected)", "Glide: merge a line or chords into legato notes" },
                 { "Shift+click / Ctrl+drag", "Select several notes" },
                 { "Drag the diamond", "Vibrato depth (up/down), speed (left/right)" },
                 { "Drag the bar below", "Vibrato fade-in length" },
@@ -1512,7 +1641,8 @@ struct PianoRoll::ShortcutsPanel final : public juce::Component
                 { "Shift + wheel", "Scroll left / right" },
                 { "Ctrl + wheel", "Zoom horizontally" },
                 { "Ctrl + Shift + wheel", "Zoom vertically" },
-                { "P  /  E  /  C", "Draw / Select / Curve tool" },
+                { "P  /  E  /  C  /  S", "Draw / Select / Curve / Slice tool" },
+                { "Slice: click / drag", "Cut a note / cut every note the line crosses" },
                 { "F1  or  ?", "Show this list" },
             } },
         };
@@ -1525,7 +1655,7 @@ struct PianoRoll::ShortcutsPanel final : public juce::Component
         g.fillAll (p.bg.withAlpha (0.82f));
 
         // 按固定的逻辑尺寸排版，窗口太小时整体缩小
-        constexpr float cardW = 760.0f, cardH = 660.0f;
+        constexpr float cardW = 760.0f, cardH = 680.0f;
         const auto area = getLocalBounds().toFloat().reduced (12.0f);
         const auto scale = juce::jmin (1.0f, area.getWidth() / cardW, area.getHeight() / cardH);
         const auto card = juce::Rectangle<float> (cardW * scale, cardH * scale).withCentre (area.getCentre());
@@ -1625,7 +1755,7 @@ PianoRoll::PianoRoll (CurvableProcessor& p, const Palette& pal)
 
     addChildComponent (shortcutsPanel.get());
 
-    for (auto* b : { &drawButton, &selectButton, &curveButton })
+    for (auto* b : { &drawButton, &selectButton, &curveButton, &sliceButton })
     {
         CurvableLookAndFeel::setStyle (*b, "segment");
         b->setClickingTogglesState (true);
@@ -1638,6 +1768,8 @@ PianoRoll::PianoRoll (CurvableProcessor& p, const Palette& pal)
     selectButton.setTooltip ("Select (E): drag to select notes");
     curveButton.setTooltip ("Curve (C): click a note to add bend points, drag them to bend the pitch");
     curveButton.onClick  = [this] { if (curveButton.getToggleState()) setTool (Tool::curve); };
+    sliceButton.setTooltip ("Slice (S): click a note to cut it, drag up or down to cut several");
+    sliceButton.onClick  = [this] { if (sliceButton.getToggleState()) setTool (Tool::slice); };
     drawButton.onClick   = [this] { if (drawButton.getToggleState()) setTool (Tool::draw); };
     selectButton.onClick = [this] { if (selectButton.getToggleState()) setTool (Tool::select); };
     drawButton.setToggleState (true, juce::dontSendNotification);
@@ -1701,12 +1833,13 @@ void PianoRoll::resized()
     keyboard->setBounds (keysBounds);
 
     // 底部工具栏
-    toolsBounds = bottom.removeFromLeft (246).withSizeKeepingCentre (246, 42);
+    toolsBounds = bottom.removeFromLeft (308).withSizeKeepingCentre (308, 42);
     auto tools = toolsBounds.reduced (4);
-    const auto toolWidth = tools.getWidth() / 3;
+    const auto toolWidth = tools.getWidth() / 4;
     drawButton.setBounds (tools.removeFromLeft (toolWidth));
     selectButton.setBounds (tools.removeFromLeft (toolWidth));
-    curveButton.setBounds (tools);
+    curveButton.setBounds (tools.removeFromLeft (toolWidth));
+    sliceButton.setBounds (tools);
 
     bottom.removeFromLeft (12);
     snapButton.setBounds (bottom.removeFromLeft (124).withSizeKeepingCentre (124, 44));
@@ -1763,6 +1896,9 @@ juce::String PianoRoll::getHint() const
     // 只提示界面上看不出来的操作：工具、吸附、力度、滚动都有可见的控件，完整列表在 ? 里
     if (tool == Tool::curve)
         return "Click note  Add point    Right-click note  Vibrato, bends    Right-click point  Delete    Alt  No snap";
+
+    if (tool == Tool::slice)
+        return "Click a note  Cut it    Drag up or down  Cut several    Alt  No snap";
 
     if (! selection.empty())
         return juce::String::fromUTF8 ("↑↓  Transpose    Ctrl+B  Duplicate    Del  Delete    Alt+drag  No snap");
@@ -1983,6 +2119,7 @@ void PianoRoll::setTool (Tool newTool)
     drawButton.setToggleState (tool == Tool::draw, juce::dontSendNotification);
     selectButton.setToggleState (tool == Tool::select, juce::dontSendNotification);
     curveButton.setToggleState (tool == Tool::curve, juce::dontSendNotification);
+    sliceButton.setToggleState (tool == Tool::slice, juce::dontSendNotification);
     noteArea->repaint(); // 曲线工具会显示节点
     repaint (getLocalBounds().removeFromBottom (bottomBarHeight));
 }
@@ -2123,6 +2260,7 @@ bool PianoRoll::keyPressed (const juce::KeyPress& key)
     if (! cmd && (code == 'P' || code == 'p')) { setTool (Tool::draw); return true; }
     if (! cmd && (code == 'E' || code == 'e')) { setTool (Tool::select); return true; }
     if (! cmd && (code == 'C' || code == 'c')) { setTool (Tool::curve); return true; }
+    if (! cmd && (code == 'S' || code == 's')) { setTool (Tool::slice); return true; }
     if (! cmd && (code == 'G' || code == 'g')) { glideSelection(); return true; }
     if (code == juce::KeyPress::escapeKey)     { setSelection ({}); return true; }
     if (code == juce::KeyPress::F1Key || key.getTextCharacter() == '?') { showShortcuts (true); return true; }
@@ -2172,32 +2310,44 @@ void PianoRoll::glideSelection()
 {
     if (selection.size() < 2)
     {
-        flashMessage ("Select two or more notes to glide between (Shift+click or Ctrl+drag).");
+        flashMessage ("Select two or more notes or chords to glide between (Shift+click or Ctrl+drag).");
         return;
     }
 
     // 先在副本上试一次，不能合并时不留下撤销记录
     auto trial = project;
-    const auto result = editing::glideNotes (trial, selection);
+    const auto result = editing::glideChords (trial, selection);
 
-    if (result.error == editing::GlideResult::Error::sameStart)
+    using Error = editing::ChordGlideResult::Error;
+
+    if (result.error == Error::oneChordOnly)
     {
-        flashMessage ("Can't glide: some selected notes start together. Select one line of notes, not a chord.");
+        flashMessage ("All selected notes start together. Select notes or chords at two or more different times.");
         return;
     }
 
-    if (result.error != editing::GlideResult::Error::none)
+    if (result.error == Error::chordTooLarge)
+    {
+        flashMessage ("Can't glide chords with more than 12 notes.");
+        return;
+    }
+
+    if (result.error != Error::none)
         return;
 
     const auto ids = selection;
-    edit ("Glide notes", [&] (Project& p) { editing::glideNotes (p, ids); });
-    setSelection ({ result.id });
+    edit ("Glide notes", [&] (Project& p) { editing::glideChords (p, ids); });
+    setSelection (editing::existingOnly (project, result.ids));
 
     // 偏移超出弯音范围时提醒（之后底部会一直显示，直到解决）
-    if (const auto* n = editing::findNote (project, result.id); n != nullptr
-        && n->curve.getMaxAbsOffset (n->length) > project.bendRange + 1.0e-9)
+    double needed = 0.0;
+    for (auto id : result.ids)
+        if (const auto* n = editing::findNote (project, id))
+            needed = std::max (needed, n->curve.getMaxAbsOffset (n->length));
+
+    if (needed > project.bendRange + 1.0e-9)
         flashMessage ("This glide needs Bend " + juce::String::fromUTF8 ("\xc2\xb1")
-                      + juce::String ((int) std::ceil (n->curve.getMaxAbsOffset (n->length) - 1.0e-9))
+                      + juce::String ((int) std::ceil (needed - 1.0e-9))
                       + " or more. Raise Bend (and your synth's range to match).");
 }
 

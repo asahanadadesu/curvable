@@ -284,6 +284,296 @@ GlideResult glideNotes (Project& p, const IdSet& ids, double glideBeats)
     return { id, GlideResult::Error::none };
 }
 
+//==============================================================================
+std::vector<int> matchVoices (const std::vector<double>& from, const std::vector<double>& to)
+{
+    const auto n = (int) from.size(), m = (int) to.size();
+    std::vector<int> result ((size_t) n, -1);
+
+    if (n == 0 || m == 0 || m > 16)
+        return result;
+
+    // 移动量 + 一点平方项：总移动量相同时，更均匀（不交叉）的配对优先
+    auto cost = [&] (int i, int j) { const auto d = std::abs (from[(size_t) i] - to[(size_t) j]); return d + 1.0e-3 * d * d; };
+
+    const auto masks = 1 << m;
+    const auto injective = n <= m;
+    constexpr double inf = std::numeric_limits<double>::infinity();
+
+    // dp[i][mask]：前 i 个声部已配好、用到的目标集合为 mask 时的最小代价；parent / choice 用于回溯
+    std::vector<std::vector<double>> dp ((size_t) n + 1, std::vector<double> ((size_t) masks, inf));
+    std::vector<std::vector<int>> choice ((size_t) n + 1, std::vector<int> ((size_t) masks, -1));
+    std::vector<std::vector<int>> parent ((size_t) n + 1, std::vector<int> ((size_t) masks, -1));
+    dp[0][0] = 0.0;
+
+    for (int i = 0; i < n; ++i)
+    {
+        for (int mask = 0; mask < masks; ++mask)
+        {
+            if (dp[(size_t) i][(size_t) mask] == inf)
+                continue;
+
+            for (int j = 0; j < m; ++j)
+            {
+                if (injective && (mask & (1 << j)) != 0)
+                    continue;
+
+                const auto next = mask | (1 << j);
+                const auto value = dp[(size_t) i][(size_t) mask] + cost (i, j);
+
+                if (value < dp[(size_t) i + 1][(size_t) next])
+                {
+                    dp[(size_t) i + 1][(size_t) next] = value;
+                    choice[(size_t) i + 1][(size_t) next] = j;
+                    parent[(size_t) i + 1][(size_t) next] = mask;
+                }
+            }
+        }
+    }
+
+    auto popcount = [] (int x) { int c = 0; for (; x != 0; x &= x - 1) ++c; return c; };
+
+    // 结尾：一对一时任意用到 n 个目标的集合；否则必须用到全部目标
+    int bestMask = -1;
+
+    for (int mask = 0; mask < masks; ++mask)
+    {
+        const auto valid = injective ? popcount (mask) == n : mask == masks - 1;
+
+        if (valid && dp[(size_t) n][(size_t) mask] < inf
+            && (bestMask < 0 || dp[(size_t) n][(size_t) mask] < dp[(size_t) n][(size_t) bestMask]))
+            bestMask = mask;
+    }
+
+    if (bestMask < 0)
+        return result;
+
+    for (int i = n, mask = bestMask; i > 0; --i)
+    {
+        result[(size_t) i - 1] = choice[(size_t) i][(size_t) mask];
+        mask = parent[(size_t) i][(size_t) mask];
+    }
+
+    return result;
+}
+
+ChordGlideResult glideChords (Project& p, const IdSet& ids, double glideBeats)
+{
+    std::vector<Note> selected;
+
+    for (const auto& n : p.notes)
+        if (ids.count (n.id) != 0)
+            selected.push_back (n);
+
+    if (selected.size() < 2)
+        return { {}, ChordGlideResult::Error::tooFewNotes };
+
+    std::stable_sort (selected.begin(), selected.end(), [] (const Note& a, const Note& b)
+    {
+        return a.start != b.start ? a.start < b.start : a.pitch < b.pitch;
+    });
+
+    // 按起点分组
+    std::vector<std::vector<Note>> groups;
+
+    for (const auto& n : selected)
+    {
+        if (groups.empty() || n.start - groups.back().front().start > 1.0e-6)
+            groups.emplace_back();
+
+        groups.back().push_back (n);
+    }
+
+    if (groups.size() < 2)
+        return { {}, ChordGlideResult::Error::oneChordOnly };
+
+    for (const auto& g : groups)
+        if (g.size() > 12)
+            return { {}, ChordGlideResult::Error::chordTooLarge };
+
+    // 每个声部是一串音符；先全部配好，最后每个声部只合并一次（滑音时机按原来的音符计算）
+    struct Line
+    {
+        std::vector<NoteId> notes;
+        double endPitch = 0.0; ///< 最后一个音符结束时的音高（含曲线）
+    };
+
+    auto endPitchOf = [] (const Note& n) { return n.pitch + n.curve.evaluate (n.length); };
+
+    std::vector<Line> lines;
+
+    for (const auto& n : groups.front())
+        lines.push_back ({ { n.id }, endPitchOf (n) });
+
+    for (std::size_t g = 1; g < groups.size(); ++g)
+    {
+        const auto& targets = groups[g];
+
+        std::vector<double> from, to;
+        for (const auto& line : lines)
+            from.push_back (line.endPitch);
+        for (const auto& t : targets)
+            to.push_back ((double) t.pitch);
+
+        const auto match = matchVoices (from, to);
+
+        std::vector<bool> used (targets.size(), false);
+        std::vector<Line> next;
+
+        for (std::size_t i = 0; i < lines.size(); ++i)
+        {
+            auto line = lines[i];
+            const auto j = match[i];
+
+            if (j < 0)
+                continue; // 不应发生
+
+            const auto& target = targets[(size_t) j];
+            NoteId targetId = target.id;
+
+            // 同一个音被两个声部配到：复制一份给后来的声部（同音重叠）
+            if (used[(size_t) j])
+            {
+                targetId = p.addNote (target.start, target.length, target.pitch, target.velocity);
+                findNote (p, targetId)->curve = target.curve;
+            }
+
+            used[(size_t) j] = true;
+            line.notes.push_back (targetId);
+            line.endPitch = endPitchOf (target);
+            next.push_back (line);
+        }
+
+        // 没有被配到的音：单独开始一个新声部
+        for (std::size_t j = 0; j < targets.size(); ++j)
+            if (! used[j])
+                next.push_back ({ { targets[j].id }, endPitchOf (targets[j]) });
+
+        lines = std::move (next);
+    }
+
+    ChordGlideResult result;
+
+    for (const auto& line : lines)
+    {
+        if (line.notes.size() < 2)
+        {
+            result.ids.insert (line.notes.front());
+            continue;
+        }
+
+        const auto merged = glideNotes (p, IdSet (line.notes.begin(), line.notes.end()), glideBeats);
+        result.ids.insert (merged.error == GlideResult::Error::none ? merged.id : line.notes.front());
+    }
+
+    return result;
+}
+
+//==============================================================================
+std::pair<PitchCurve, PitchCurve> splitCurve (const PitchCurve& c, double cut)
+{
+    PitchCurve left, right;
+    left.vibrato = right.vibrato = c.vibrato;
+
+    if (c.points.empty())
+        return { left, right };
+
+    const auto& pts = c.points;
+    const auto count = (int) pts.size();
+    const auto value = c.evaluate (cut);
+    const auto seg = c.segmentAt (cut); // 最后一个不晚于切点的节点
+
+    // 被切开的那一段在切点处的比例（指数形状的一部分仍是同一种形状，只是弯曲程度按比例缩小）
+    double u = 0.0;
+    if (seg >= 0 && seg + 1 < count)
+    {
+        const auto span = pts[(size_t) seg + 1].time - pts[(size_t) seg].time;
+        u = span > 0.0 ? (cut - pts[(size_t) seg].time) / span : 0.0;
+    }
+
+    // 前半段：切点之前的节点 + 切点上的节点
+    for (int i = 0; i < count; ++i)
+    {
+        if (pts[(size_t) i].time >= cut - 1.0e-9)
+            break;
+
+        auto point = pts[(size_t) i];
+
+        if (i == seg && seg + 1 < count)
+            point.tension = (float) (point.tension * u);
+
+        left.points.push_back (point);
+    }
+
+    left.points.push_back ({ cut, value, 0.0f, false });
+
+    // 后半段：起点上的节点（沿用被切开那一段剩下的部分）+ 切点之后的节点
+    CurvePoint first { 0.0, value, 0.0f, false };
+
+    if (seg >= 0)
+    {
+        first.vibrato = pts[(size_t) seg].vibrato;
+        first.tension = seg + 1 < count ? (float) (pts[(size_t) seg].tension * (1.0 - u)) : pts[(size_t) seg].tension;
+    }
+
+    right.points.push_back (first);
+
+    for (const auto& point : pts)
+    {
+        if (point.time > cut + 1.0e-9)
+        {
+            auto shifted = point;
+            shifted.time -= cut;
+            right.points.push_back (shifted);
+        }
+    }
+
+    return { left, right };
+}
+
+IdSet sliceNotes (Project& p, const IdSet& ids, double atBeat)
+{
+    IdSet added;
+    std::vector<Note> rights;
+
+    for (auto& n : p.notes)
+    {
+        if (ids.count (n.id) == 0 || atBeat <= n.start + minNoteLength || atBeat >= n.getEnd() - minNoteLength)
+            continue;
+
+        const auto cut = atBeat - n.start;
+        auto [left, right] = splitCurve (n.curve, cut);
+
+        Note r = n;
+        r.start = atBeat;
+        r.length = n.getEnd() - atBeat;
+        r.curve = std::move (right);
+
+        // 后半段的音高改为切点处最接近的半音（例如切在滑音之后，后半段就是滑到的那个音）
+        if (! r.curve.points.empty())
+        {
+            const auto shift = std::clamp ((int) std::lround (r.curve.points.front().semitones), -r.pitch, 127 - r.pitch);
+            r.pitch += shift;
+
+            for (auto& point : r.curve.points)
+                point.semitones -= shift;
+        }
+
+        n.length = cut;
+        n.curve = std::move (left);
+        rights.push_back (std::move (r));
+    }
+
+    for (auto& r : rights)
+    {
+        const auto id = p.addNote (r.start, r.length, r.pitch, r.velocity);
+        findNote (p, id)->curve = std::move (r.curve);
+        added.insert (id);
+    }
+
+    return added;
+}
+
 IdSet notesInRange (const Project& p, double beatStart, double beatEnd, int pitchLow, int pitchHigh)
 {
     if (beatEnd < beatStart)
