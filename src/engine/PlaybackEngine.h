@@ -2,8 +2,57 @@
 
 #include "engine/SketchPlayer.h"
 
+#include <array>
+
 namespace curvable
 {
+
+/** 所有声部的 SketchPlayer（每个声部一个），接口与单个 SketchPlayer 相同。 */
+class VoicePlayers
+{
+public:
+    VoicePlayers()
+    {
+        for (int v = 0; v < Schedule::maxVoices; ++v)
+            players[(std::size_t) v].setVoice (v);
+    }
+
+    void setSchedule (const Schedule* s, double beat, int offset, MidiEventList& out)
+    {
+        for (auto& p : players) p.setSchedule (s, beat, offset, out);
+    }
+
+    void render (double from, double to, double sampleAtFrom, int blockStart, int blockEnd, double spb, MidiEventList& out)
+    {
+        for (auto& p : players) p.render (from, to, sampleAtFrom, blockStart, blockEnd, spb, out);
+    }
+
+    void start (double beat, int offset, MidiEventList& out)
+    {
+        for (auto& p : players) p.start (beat, offset, out);
+    }
+
+    void stopAll (int offset, MidiEventList& out)
+    {
+        for (auto& p : players) p.stopAll (offset, out);
+    }
+
+    void resetWheels (int offset, MidiEventList& out)
+    {
+        for (auto& p : players) p.resetWheel (offset, out);
+    }
+
+    bool hasActiveNotes() const noexcept
+    {
+        for (const auto& p : players)
+            if (p.hasActiveNotes())
+                return true;
+        return false;
+    }
+
+private:
+    std::array<SketchPlayer, Schedule::maxVoices> players;
+};
 
 /** 一个音频块开始时的宿主走带信息。 */
 struct HostTransport
@@ -44,6 +93,12 @@ public:
     /** 停止一切（例如宿主调用 releaseResources 前）。 */
     void reset (MidiEventList& out);
 
+    /** 声部到音源实例的对应关系改变时（新的实例准备好了，或被回收了），分两步：
+        1. stopVoices：按旧的对应关系停止所有音符（note off 要发到原来的实例上）；
+        2. resyncVoices：按新的对应关系把每个声部的弯音归零，然后在当前位置重新开始（补发正在持续的音符）。 */
+    void stopVoices (MidiEventList& out);
+    void resyncVoices (MidiEventList& out);
+
     /** 测试与界面用：TRIGGER 模式下是否正在播放、当前位置。 */
     bool isTriggerActive() const noexcept { return trigger.active; }
     double getTriggerPosition() const noexcept { return trigger.position; }
@@ -56,7 +111,7 @@ private:
     void stopEverything (int sampleOffset, MidiEventList&);
 
     double sampleRate = 44100.0;
-    SketchPlayer player;
+    VoicePlayers player;
     const Schedule* schedule = nullptr;
     PlaybackMode currentMode = PlaybackMode::off;
 

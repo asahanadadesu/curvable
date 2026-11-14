@@ -16,10 +16,11 @@ struct MidiNoteEvent
     int velocity = 0;     ///< note off 时为 0
     bool isPitchWheel = false;
     int wheelValue = 8192; ///< 14 位弯音值（isPitchWheel 时有效）
+    int voice = 0;         ///< 声部（发给哪个音源实例）
 
-    static MidiNoteEvent pitchWheel (int sampleOffset, int value) noexcept
+    static MidiNoteEvent pitchWheel (int sampleOffset, int value, int voice = 0) noexcept
     {
-        return { sampleOffset, false, 0, 0, true, value };
+        return { sampleOffset, false, 0, 0, true, value, voice };
     }
 
     bool operator== (const MidiNoteEvent&) const = default;
@@ -40,6 +41,15 @@ public:
             ++dropped;
     }
 
+    void add (MidiNoteEvent e, int voice) noexcept
+    {
+        e.voice = voice;
+        if (events.size() < events.capacity())
+            events.push_back (e);
+        else
+            ++dropped;
+    }
+
     const std::vector<MidiNoteEvent>& get() const noexcept { return events; }
     std::size_t getNumDropped() const noexcept { return dropped; }
 
@@ -54,7 +64,9 @@ private:
     同一音高的音符重叠时：后一个会重新触发（先 off 再 on），只有最后一个结束时才真正发送 note off，
     避免早结束的音符把仍在响的同音高音符切断。
 
-    弯音（单实例 Pitch Wheel 模式）：弯音轮跟随最近开始、仍在发声的音符的曲线。
+    每个 SketchPlayer 只负责一个声部（setVoice），只播放分配到这个声部的音符，输出的事件都标上这个声部。
+
+    弯音：弯音轮跟随本声部最近开始、仍在发声的音符的曲线（同一声部里重叠的音符弯音相同，见 VoiceAllocator）。
     - 音符开始时，先在同一采样上发送它起点处的弯音值，再发 note on（滑入的音不会先响一下原音高）。
     - 发声期间每 bendInterval 个采样求值一次，值变化时才发送。
     - 音符结束后保持最后的值（释放尾音不会跳回原音高），直到下一个音符开始；停止播放时回到中心。
@@ -63,6 +75,10 @@ class SketchPlayer
 {
 public:
     SketchPlayer();
+
+    /** 只播放分配到这个声部的音符。 */
+    void setVoice (int v) noexcept { voice = v; }
+    int getVoice() const noexcept { return voice; }
 
     /** 换用新的 Schedule。正在发声、但在新 Schedule 里已不存在或音高已改变的音符立即停止；
         其余音符沿用，并采用新的结束时间（新的结束时间已过则立即停止）。 */
@@ -88,6 +104,9 @@ public:
     void stopAll (int sampleOffset, MidiEventList& out);
 
     bool hasActiveNotes() const noexcept { return ! active.empty(); }
+
+    /** 音源实例的弯音状态不确定时（例如换了实例）：立即发送一次中心值，并且下一次求值总会发送。 */
+    void resetWheel (int sampleOffset, MidiEventList& out);
 
     /** 弯音求值的间隔（采样）。 */
     static constexpr int bendInterval = 32;
@@ -127,6 +146,7 @@ private:
     std::vector<Action> actions;
     int pitchCount[128] {};
 
+    int voice = 0;
     NoteId wheelOwner = 0;
     int lastWheel = 8192;
     std::uint64_t activationCounter = 0;

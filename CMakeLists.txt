@@ -26,6 +26,7 @@ add_library(curvable_core STATIC
     src/engine/Schedule.cpp
     src/engine/SketchPlayer.cpp
     src/engine/PlaybackEngine.cpp
+    src/engine/VoiceAllocator.cpp
     src/hosting/FLDatabaseParser.cpp
 )
 target_include_directories(curvable_core PUBLIC src)

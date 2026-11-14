@@ -475,7 +475,21 @@ void CurvableEditor::refresh()
     if (loading)
         synthButton.setButtonText ("Loading...");
     else if (hosted.isLoaded())
-        synthButton.setButtonText (name);
+    {
+        // 多个实例时显示数量；还在创建时显示进度
+        const auto have = hosted.getNumInstances(), want = hosted.getWantedInstances();
+
+        if (have < want)
+            synthButton.setButtonText (name + "  (" + juce::String (have) + "/" + juce::String (want) + ")");
+        else if (have > 1)
+            synthButton.setButtonText (name + juce::String::fromUTF8 ("  ×") + juce::String (have));
+        else
+            synthButton.setButtonText (name);
+
+        synthButton.setTooltip (have > 1 || want > 1
+                                    ? juce::String (have) + " copies of the synth are running so that notes can bend independently."
+                                    : juce::String());
+    }
     else if (hosted.isMissing())
         synthButton.setButtonText ("Missing: " + name);
     else
@@ -485,12 +499,16 @@ void CurvableEditor::refresh()
     synthButton.repaint();
     synthTab.setButtonText (hosted.isMissing() ? "Synth (!)" : "Synth");
 
-    statusIsError = message.isNotEmpty() ? messageIsError : hosted.getLastError().isNotEmpty();
+    statusIsError = message.isNotEmpty() ? messageIsError
+                                         : (hosted.getLastError().isNotEmpty() || hosted.getCloneError().isNotEmpty());
 
     if (message.isNotEmpty())
         statusText = message;
     else if (hosted.getLastError().isNotEmpty())
         statusText = hosted.getLastError();
+    else if (hosted.getCloneError().isNotEmpty())
+        statusText = "Could not create another copy of the synth (" + hosted.getCloneError()
+                     + "). Some bent notes play unbent for now; retrying shortly.";
     else if (loading)
         statusText = "Loading synth...";
     else if (hosted.isLoaded())

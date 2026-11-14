@@ -35,9 +35,9 @@ void SketchPlayer::activate (const ScheduledNote& note, double beat, int sampleO
 
     // 同音高已在发声：重新触发
     if (pitchCount[note.pitch] > 0)
-        out.add ({ sampleOffset, false, note.pitch, 0 });
+        out.add ({ sampleOffset, false, note.pitch, 0 }, voice);
 
-    out.add ({ sampleOffset, true, note.pitch, note.velocity });
+    out.add ({ sampleOffset, true, note.pitch, note.velocity }, voice);
     ++pitchCount[note.pitch];
     active.push_back ({ note.id, note.pitch, note.end, &note, ++activationCounter });
 }
@@ -49,7 +49,7 @@ void SketchPlayer::deactivate (std::size_t index, int sampleOffset, MidiEventLis
     if (--pitchCount[pitch] <= 0)
     {
         pitchCount[pitch] = 0;
-        out.add ({ sampleOffset, false, pitch, 0 });
+        out.add ({ sampleOffset, false, pitch, 0 }, voice);
     }
 
     const auto id = active[index].id;
@@ -90,7 +90,7 @@ void SketchPlayer::sendWheel (int value, int sampleOffset, MidiEventList& out)
         return;
 
     lastWheel = value;
-    out.add (MidiNoteEvent::pitchWheel (sampleOffset, value));
+    out.add (MidiNoteEvent::pitchWheel (sampleOffset, value, voice));
 }
 
 int SketchPlayer::wheelValueAt (const ScheduledNote& note, double beat) const noexcept
@@ -133,7 +133,7 @@ void SketchPlayer::setSchedule (const Schedule* newSchedule, double currentBeat,
     {
         const auto* note = schedule != nullptr ? schedule->find (active[i].id) : nullptr;
 
-        if (note == nullptr || note->pitch != active[i].pitch || note->end <= currentBeat)
+        if (note == nullptr || note->pitch != active[i].pitch || note->voice != voice || note->end <= currentBeat)
         {
             deactivate (i, sampleOffset, out);
         }
@@ -172,6 +172,9 @@ void SketchPlayer::render (double from, double to, double sampleAtFrom, int bloc
 
         for (; it != notes.end() && it->start < to - beatEpsilon && actions.size() + 2 <= actions.capacity(); ++it)
         {
+            if (it->voice != voice)
+                continue;
+
             actions.push_back ({ it->start, true, &*it, it->id, it->pitch });
 
             if (it->end < to - beatEpsilon)
@@ -230,9 +233,15 @@ void SketchPlayer::start (double beat, int sampleOffset, MidiEventList& out)
         if (note.start >= beat - beatEpsilon)
             break; // 已排序；起点在 beat 及之后的交给 render
 
-        if (note.end > beat + beatEpsilon)
+        if (note.voice == voice && note.end > beat + beatEpsilon)
             activate (note, beat, sampleOffset, out);
     }
+}
+
+void SketchPlayer::resetWheel (int sampleOffset, MidiEventList& out)
+{
+    lastWheel = 8192;
+    out.add (MidiNoteEvent::pitchWheel (sampleOffset, 8192, voice));
 }
 
 void SketchPlayer::stopAll (int sampleOffset, MidiEventList& out)

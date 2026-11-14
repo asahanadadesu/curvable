@@ -22,6 +22,22 @@ void PlaybackEngine::reset (MidiEventList& out)
     stopEverything (0, out);
 }
 
+void PlaybackEngine::stopVoices (MidiEventList& out)
+{
+    player.stopAll (0, out);
+}
+
+void PlaybackEngine::resyncVoices (MidiEventList& out)
+{
+    player.resetWheels (0, out);
+
+    // AUTO：下一块会按"跳转"处理，从宿主位置补发；TRIGGER：立即从当前位置补发
+    autoRunning = false;
+
+    if (currentMode == PlaybackMode::trigger && trigger.active)
+        player.start (trigger.position, 0, out);
+}
+
 void PlaybackEngine::stopEverything (int sampleOffset, MidiEventList& out)
 {
     player.stopAll (sampleOffset, out);

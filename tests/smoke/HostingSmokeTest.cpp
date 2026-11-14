@@ -10,6 +10,8 @@
 
 #include <juce_audio_utils/juce_audio_utils.h>
 
+#include <array>
+
 #include <iostream>
 
 using namespace curvable;
@@ -175,6 +177,37 @@ int main (int argc, char* argv[])
             check (hosted.getOrCreateEditor() != nullptr, "editor can be created again");
             hosted.releaseEditor();
             parent.removeFromDesktop();
+        }
+
+        // 2b. 多实例：按需创建副本，副本能单独发声，多余的会被回收
+        {
+            hosted.setWantedInstances (3);
+            const auto created = waitFor ([&] { return hosted.getNumInstances() == 3; }, 60000);
+            check (created, "two synth copies created (" + juce::String (hosted.getNumInstances()) + " instances)");
+
+            juce::AudioBuffer<float> buffer (2, testBlockSize);
+            std::array<juce::MidiBuffer, 3> perInstance;
+            float copyPeak = 0.0f;
+            const int numBlocks = (int) (0.5 * testSampleRate / testBlockSize);
+
+            for (int i = 0; i < numBlocks; ++i)
+            {
+                if (i == 0)
+                    perInstance[2].addEvent (juce::MidiMessage::noteOn (1, 64, (juce::uint8) 100), 0);
+                if (i == numBlocks - 1)
+                    perInstance[2].addEvent (juce::MidiMessage::noteOff (1, 64), 0);
+
+                hosted.process (buffer, perInstance.data(), (int) perInstance.size(), nullptr, true);
+                copyPeak = juce::jmax (copyPeak, buffer.getMagnitude (0, testBlockSize));
+            }
+
+            check (copyPeak > 1.0e-4f, "a copy produces audio on its own (peak " + juce::String (copyPeak, 5) + ")");
+
+            hosted.syncClones();
+            check (true, "copies synced from the main instance");
+
+            hosted.setWantedInstances (1);
+            check (waitFor ([&] { return hosted.getNumInstances() == 1; }, 10000), "unneeded copies removed after a delay");
         }
 
         // 3. 保存状态

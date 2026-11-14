@@ -13,16 +13,23 @@ namespace
 HostedInstrument::HostedInstrument (HostingContext& ctx)
     : context (ctx)
 {
+    clones.reserve (maxInstances);
+    spareMidi.ensureSize (1024);
+    startTimerHz (5);
 }
 
 HostedInstrument::~HostedInstrument()
 {
+    stopTimer();
     releaseEditor();
 
     std::unique_ptr<juce::AudioPluginInstance> old;
+    std::vector<std::unique_ptr<juce::AudioPluginInstance>> oldClones;
     {
         const juce::ScopedLock sl (audioLock);
         old = std::move (instance);
+        oldClones.swap (clones);
+        numInstances = 0;
     }
 
     if (old != nullptr)
@@ -30,6 +37,9 @@ HostedInstrument::~HostedInstrument()
         old->removeListener (&changeWatcher);
         old->releaseResources();
     }
+
+    for (auto& c : oldClones)
+        c->releaseResources();
 }
 
 void HostedInstrument::noteUserChange() noexcept
@@ -237,6 +247,14 @@ void HostedInstrument::install (std::unique_ptr<juce::AudioPluginInstance> newIn
 
     releaseEditor();
 
+    // 旧音源的副本作废（包括正在创建中的）
+    ++cloneGeneration;
+    creatingClone = false;
+    cloneError = {};
+    cloneRetryAt = 0;
+    surplusSince = 0;
+    fullSyncPending = false;
+
     juce::AudioBuffer<float> newScratch;
     double preparedRate = 0.0;
     int preparedBlock = 0;
@@ -259,6 +277,7 @@ void HostedInstrument::install (std::unique_ptr<juce::AudioPluginInstance> newIn
     }
 
     std::unique_ptr<juce::AudioPluginInstance> old;
+    std::vector<std::unique_ptr<juce::AudioPluginInstance>> oldClones;
     {
         const juce::ScopedLock sl (audioLock);
 
@@ -274,6 +293,8 @@ void HostedInstrument::install (std::unique_ptr<juce::AudioPluginInstance> newIn
 
         old = std::move (instance);
         instance = std::move (newInstance);
+        oldClones.swap (clones);
+        numInstances = instance != nullptr ? 1 : 0;
         std::swap (scratch, newScratch);
         lastNonRealtime = false;
 
@@ -292,7 +313,201 @@ void HostedInstrument::install (std::unique_ptr<juce::AudioPluginInstance> newIn
         old->releaseResources(); // old 在离开作用域时于消息线程上销毁
     }
 
+    for (auto& c : oldClones)
+        c->releaseResources();
+
     sendChangeMessage();
+    createNextClone();
+}
+
+//==============================================================================
+void HostedInstrument::setWantedInstances (int count)
+{
+    JUCE_ASSERT_MESSAGE_THREAD
+
+    count = juce::jlimit (1, maxInstances, count);
+
+    if (count == wantedInstances)
+        return;
+
+    wantedInstances = count;
+    createNextClone();
+    sendChangeMessage();
+}
+
+void HostedInstrument::createNextClone()
+{
+    JUCE_ASSERT_MESSAGE_THREAD
+
+    if (creatingClone || instance == nullptr || 1 + (int) clones.size() >= wantedInstances)
+        return;
+
+    if (cloneRetryAt != 0 && juce::Time::getMillisecondCounter() < cloneRetryAt)
+        return; // 刚失败过，等一会儿再试（由 timerCallback 重新调用）
+
+    creatingClone = true;
+    const auto generation = cloneGeneration;
+    juce::WeakReference<HostedInstrument> weakThis (this);
+
+    // 一次只创建一个：大型音源创建要几百毫秒，逐个来不会让界面卡住太久
+    context.formatManager.createPluginInstanceAsync (
+        instance->getPluginDescription(), sampleRate, blockSize,
+        [weakThis, generation] (std::unique_ptr<juce::AudioPluginInstance> created, const juce::String& error)
+        {
+            auto* self = weakThis.get();
+
+            if (self == nullptr || generation != self->cloneGeneration || self->instance == nullptr)
+                return; // 已销毁，或者换了音源
+
+            self->creatingClone = false;
+
+            if (created == nullptr)
+            {
+                // 创建失败：记下原因，10 秒后再试；在此之前缺实例的声部暂时不弯
+                self->cloneError = error.isNotEmpty() ? error : juce::String ("unknown error");
+                self->cloneRetryAt = juce::Time::getMillisecondCounter() + 10000;
+                self->sendChangeMessage();
+                return;
+            }
+
+            self->cloneError = {};
+            self->cloneRetryAt = 0;
+
+            configureBuses (*created);
+
+            juce::MemoryBlock state;
+            self->instance->getStateInformation (state);
+
+            if (state.getSize() > 0)
+                created->setStateInformation (state.getData(), (int) state.getSize());
+
+            const auto rate = self->sampleRate;
+            const auto block = self->blockSize;
+            self->prepareInstance (*created, rate, block);
+
+            {
+                const juce::ScopedLock sl (self->audioLock);
+
+                // 创建期间宿主可能改了采样率或缓冲大小
+                if (self->prepared && (rate != self->sampleRate || block != self->blockSize))
+                {
+                    created->releaseResources();
+                    self->prepareInstance (*created, self->sampleRate, self->blockSize);
+                }
+
+                self->clones.push_back (std::move (created));
+                self->numInstances = 1 + (int) self->clones.size();
+            }
+
+            self->sendChangeMessage();
+            self->createNextClone();
+        });
+}
+
+void HostedInstrument::removeExtraClones()
+{
+    JUCE_ASSERT_MESSAGE_THREAD
+
+    std::vector<std::unique_ptr<juce::AudioPluginInstance>> removed;
+    {
+        const juce::ScopedLock sl (audioLock);
+
+        while (1 + (int) clones.size() > wantedInstances && ! clones.empty())
+        {
+            removed.push_back (std::move (clones.back()));
+            clones.pop_back();
+        }
+
+        numInstances = instance != nullptr ? 1 + (int) clones.size() : 0;
+    }
+
+    for (auto& c : removed)
+        c->releaseResources();
+
+    if (! removed.empty())
+        sendChangeMessage();
+}
+
+void HostedInstrument::syncClones()
+{
+    JUCE_ASSERT_MESSAGE_THREAD
+
+    if (instance == nullptr || clones.empty())
+        return;
+
+    juce::MemoryBlock state;
+    instance->getStateInformation (state);
+
+    if (state.getSize() == 0)
+        return;
+
+    for (auto& c : clones)
+        c->setStateInformation (state.getData(), (int) state.getSize());
+}
+
+void HostedInstrument::forwardParameter (int index, float value) noexcept
+{
+    // 可能在任意线程上（包括主实例的音频回调里）；副本列表只在持有 audioLock 时改变
+    const juce::ScopedLock sl (audioLock);
+
+    for (auto& c : clones)
+    {
+        const auto& params = c->getParameters();
+
+        if (juce::isPositiveAndBelow (index, params.size()))
+            params[index]->setValue (value);
+    }
+}
+
+void HostedInstrument::timerCallback()
+{
+    const auto now = juce::Time::getMillisecondCounter();
+
+    // 换预设等变化停下来 0.4 秒后，整体复制一次
+    if (fullSyncPending && now - lastStateChange.load() > 400)
+    {
+        fullSyncPending = false;
+        syncClones();
+    }
+
+    // 失败后的重试
+    if (cloneRetryAt != 0 && now >= cloneRetryAt)
+    {
+        cloneRetryAt = 0;
+        createNextClone();
+    }
+
+    // 多余的副本 5 秒后才销毁（编辑时声部数会来回变）
+    if (instance != nullptr && 1 + (int) clones.size() > wantedInstances)
+    {
+        if (surplusSince == 0)
+            surplusSince = now;
+        else if (now - surplusSince > 5000)
+        {
+            surplusSince = 0;
+            removeExtraClones();
+        }
+    }
+    else
+    {
+        surplusSince = 0;
+    }
+}
+
+void HostedInstrument::prepareInstance (juce::AudioPluginInstance& plugin, double rate, int block)
+{
+    plugin.setRateAndBufferSizeDetails (rate, block);
+
+    if (prepared)
+        plugin.prepareToPlay (rate, block);
+}
+
+juce::AudioPluginInstance* HostedInstrument::getInstanceUnlocked (int index) const noexcept
+{
+    if (index == 0)
+        return instance.get();
+
+    return juce::isPositiveAndBelow (index - 1, (int) clones.size()) ? clones[(size_t) index - 1].get() : nullptr;
 }
 
 void HostedInstrument::configureBuses (juce::AudioPluginInstance& plugin)
@@ -342,6 +557,14 @@ void HostedInstrument::prepare (double newSampleRate, int maxBlockSize)
         latencySamples = instance->getLatencySamples();
         tailSeconds = instance->getTailLengthSeconds();
     }
+
+    for (auto& c : clones)
+    {
+        c->setRateAndBufferSizeDetails (sampleRate, blockSize);
+        c->prepareToPlay (sampleRate, blockSize);
+    }
+
+    spareMidi.ensureSize (1024);
 }
 
 void HostedInstrument::release()
@@ -352,46 +575,73 @@ void HostedInstrument::release()
 
     if (instance != nullptr)
         instance->releaseResources();
+
+    for (auto& c : clones)
+        c->releaseResources();
 }
 
-void HostedInstrument::process (juce::AudioBuffer<float>& output, juce::MidiBuffer& midi,
+void HostedInstrument::process (juce::AudioBuffer<float>& output, juce::MidiBuffer* midi, int numMidi,
                                 juce::AudioPlayHead* playHead, bool isNonRealtime) noexcept
 {
     const auto numSamples = output.getNumSamples();
     const juce::ScopedTryLock sl (audioLock);
 
+    auto clearMidi = [&]
+    {
+        for (int i = 0; i < numMidi; ++i)
+            midi[i].clear();
+    };
+
     if (! sl.isLocked() || instance == nullptr || ! prepared)
     {
         output.clear();
-        midi.clear();
+        clearMidi();
         return;
     }
 
-    // 容量足够时不会重新分配内存；宿主给出超过 prepare 时声明的块大小时才会分配
-    scratch.setSize (scratchChannelsFor (*instance), numSamples, false, false, true);
-    scratch.clear();
+    const auto count = 1 + (int) clones.size();
+    const auto nonRealtimeChanged = isNonRealtime != lastNonRealtime;
+    lastNonRealtime = isNonRealtime;
 
-    instance->setPlayHead (playHead);
-
-    if (isNonRealtime != lastNonRealtime)
+    for (int i = 0; i < count; ++i)
     {
-        instance->setNonRealtime (isNonRealtime);
-        lastNonRealtime = isNonRealtime;
+        auto* plugin = getInstanceUnlocked (i);
+
+        // 容量足够时不会重新分配内存；宿主给出超过 prepare 时声明的块大小时才会分配
+        scratch.setSize (scratchChannelsFor (*plugin), numSamples, false, false, true);
+        scratch.clear();
+
+        plugin->setPlayHead (playHead);
+
+        if (nonRealtimeChanged)
+            plugin->setNonRealtime (isNonRealtime);
+
+        auto& events = i < numMidi ? midi[i] : spareMidi;
+        plugin->processBlock (scratch, events);
+        events.clear(); // 音源可能写入了它自己输出的 MIDI
+
+        // 主输出总线的声道位于缓冲区最前面；单声道输出复制到两边。各实例的输出相加
+        const auto hostedOutputs = plugin->getMainBusNumOutputChannels();
+
+        for (int ch = 0; ch < output.getNumChannels(); ++ch)
+        {
+            if (hostedOutputs <= 0)
+            {
+                if (i == 0)
+                    output.clear (ch, 0, numSamples);
+            }
+            else if (i == 0)
+            {
+                output.copyFrom (ch, 0, scratch, juce::jmin (ch, hostedOutputs - 1), 0, numSamples);
+            }
+            else
+            {
+                output.addFrom (ch, 0, scratch, juce::jmin (ch, hostedOutputs - 1), 0, numSamples);
+            }
+        }
     }
 
-    instance->processBlock (scratch, midi);
-    midi.clear();
-
-    // 主输出总线的声道位于缓冲区最前面；单声道输出复制到两边
-    const auto hostedOutputs = instance->getMainBusNumOutputChannels();
-
-    for (int ch = 0; ch < output.getNumChannels(); ++ch)
-    {
-        if (hostedOutputs <= 0)
-            output.clear (ch, 0, numSamples);
-        else
-            output.copyFrom (ch, 0, scratch, juce::jmin (ch, hostedOutputs - 1), 0, numSamples);
-    }
+    clearMidi();
 }
 
 } // namespace curvable

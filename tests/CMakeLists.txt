@@ -12,6 +12,7 @@ target_sources(curvable_tests PRIVATE
     NoteEditingTests.cpp
     RollViewTests.cpp
     PitchCurveTests.cpp
+    VoiceAllocatorTests.cpp
     ${CURVABLE_JUCE_MODEL_SOURCES}
 )
 

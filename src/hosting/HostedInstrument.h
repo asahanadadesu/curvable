@@ -8,7 +8,12 @@
 namespace curvable
 {
 
-/** 在 Curvable 内部托管一个音源插件。
+/** 在 Curvable 内部托管一个音源插件，并按需复制成多个实例（每个声部一个）。
+
+    第 0 个实例是"主实例"：用户看到和操作的就是它，保存的也是它的状态。其余是副本（clone）：
+    - 按 setWantedInstances 在后台逐个创建（异步，不阻塞界面），创建时复制主实例的状态；
+    - 主实例的参数变化立即转发给副本；换预设等非参数的变化稍后整体复制一次（也可以手动 syncClones）；
+    - 不再需要时延迟几秒再销毁，避免编辑时反复创建。
 
     线程约定：
     - load / unload / restoreState / getOrCreateEditor 等：只在消息线程调用。
@@ -17,7 +22,8 @@ namespace curvable
 
     状态变化（加载、卸载、出错）时会发送 change 消息。
 */
-class HostedInstrument final : public juce::ChangeBroadcaster
+class HostedInstrument final : public juce::ChangeBroadcaster,
+                               private juce::Timer
 {
 public:
     explicit HostedInstrument (HostingContext&);
@@ -57,6 +63,18 @@ public:
 
     juce::AudioProcessorEditor* getEditor() const noexcept { return editor.get(); }
 
+    /** 需要几个实例（包括主实例）。会在后台补齐；多余的延迟销毁。 */
+    void setWantedInstances (int count);
+    int getWantedInstances() const noexcept { return wantedInstances; }
+
+    /** 最近一次创建副本失败的原因（成功后清空）。 */
+    juce::String getCloneError() const { return cloneError; }
+
+    /** 把主实例的完整状态复制给所有副本。 */
+    void syncClones();
+
+    static constexpr int maxInstances = 16;
+
     /** 自上次调用以来，用户是否改动过音源（调参数、换预设等）。任意线程可调用。
         刚加载或恢复后的短时间内，音源自己发出的变化通知会被忽略。 */
     bool consumeUserChange() noexcept { return userChanged.exchange (false); }
@@ -71,6 +89,9 @@ public:
     // 任意线程
 
     int getLatencySamples() const noexcept     { return latencySamples.load(); }
+
+    /** 已就绪、正在参与发声的实例数（没有加载音源时为 0）。 */
+    int getNumInstances() const noexcept       { return numInstances.load(); }
     double getTailLengthSeconds() const noexcept { return tailSeconds.load(); }
 
     //==============================================================================
@@ -79,9 +100,17 @@ public:
     void prepare (double sampleRate, int maxBlockSize);
     void release();
 
-    /** 音频线程：把 midi 交给音源，音源输出写入 output（已有内容会被覆盖）。处理后清空 midi。 */
-    void process (juce::AudioBuffer<float>& output, juce::MidiBuffer& midi,
+    /** 音频线程：midi[i] 交给第 i 个实例，所有实例的输出相加后写入 output（已有内容会被覆盖）。
+        numMidi 少于实例数时，其余实例收到空的 MIDI。处理后清空所有 midi。 */
+    void process (juce::AudioBuffer<float>& output, juce::MidiBuffer* midi, int numMidi,
                   juce::AudioPlayHead* playHead, bool isNonRealtime) noexcept;
+
+    /** 单实例的便捷写法。 */
+    void process (juce::AudioBuffer<float>& output, juce::MidiBuffer& midi,
+                  juce::AudioPlayHead* playHead, bool isNonRealtime) noexcept
+    {
+        process (output, &midi, 1, playHead, isNonRealtime);
+    }
 
     static constexpr auto stateType = "HostedPlugin";
 
@@ -90,6 +119,13 @@ private:
     void restoreNow (const juce::ValueTree&);
     void setError (const juce::String&);
     static void configureBuses (juce::AudioPluginInstance&);
+
+    void timerCallback() override;
+    void createNextClone();
+    void removeExtraClones();
+    void forwardParameter (int index, float value) noexcept;
+    void prepareInstance (juce::AudioPluginInstance&, double rate, int block);
+    juce::AudioPluginInstance* getInstanceUnlocked (int index) const noexcept;
     static int scratchChannelsFor (const juce::AudioPluginInstance&);
 
     HostingContext& context;
@@ -97,7 +133,10 @@ private:
     /** 只在交换指针时短暂持有；音频线程用 try-lock，不会被阻塞。 */
     juce::CriticalSection audioLock;
     std::unique_ptr<juce::AudioPluginInstance> instance;
+    std::vector<std::unique_ptr<juce::AudioPluginInstance>> clones; ///< 修改时持有 audioLock
+    std::atomic<int> numInstances { 0 };
     juce::AudioBuffer<float> scratch;
+    juce::MidiBuffer spareMidi;
     bool lastNonRealtime = false; // 仅音频线程访问
 
     double sampleRate = 44100.0;
@@ -111,17 +150,37 @@ private:
     juce::String lastError;
     int loadGeneration = 0; ///< 让过时的异步加载结果作废
 
+    // 副本（消息线程）
+    int wantedInstances = 1;
+    int cloneGeneration = 0;           ///< 换了音源后，旧的副本创建结果作废
+    bool creatingClone = false;
+    juce::String cloneError;
+    juce::uint32 cloneRetryAt = 0;     ///< 创建失败后，到这个时间再重试
+    juce::uint32 surplusSince = 0;     ///< 实例多于需要的起始时间（0 = 不多）
+    std::atomic<bool> fullSyncPending { false };
+    std::atomic<juce::uint32> lastStateChange { 0 };
+
     std::unique_ptr<juce::AudioProcessorEditor> editor;
 
     /** 监听被托管插件的参数和状态变化（可能在任意线程上回调）。 */
     struct ChangeWatcher final : public juce::AudioProcessorListener
     {
         explicit ChangeWatcher (HostedInstrument& o) : owner (o) {}
-        void audioProcessorParameterChanged (juce::AudioProcessor*, int, float) override { owner.noteUserChange(); }
+        void audioProcessorParameterChanged (juce::AudioProcessor*, int index, float value) override
+        {
+            owner.forwardParameter (index, value);
+            owner.noteUserChange();
+        }
+
         void audioProcessorChanged (juce::AudioProcessor*, const ChangeDetails& details) override
         {
             if (details.parameterInfoChanged || details.programChanged || details.nonParameterStateChanged)
+            {
+                // 换预设等：参数转发不一定覆盖得到，稍后把完整状态复制给副本
+                owner.lastStateChange = juce::Time::getMillisecondCounter();
+                owner.fullSyncPending = true;
                 owner.noteUserChange();
+            }
         }
         HostedInstrument& owner;
     };

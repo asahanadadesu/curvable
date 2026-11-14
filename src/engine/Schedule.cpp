@@ -1,4 +1,5 @@
 #include "engine/Schedule.h"
+#include "engine/VoiceAllocator.h"
 
 #include <algorithm>
 #include <cmath>
@@ -35,6 +36,10 @@ Schedule Schedule::compile (const Project& project)
             return a.start < b.start;
         return a.pitch < b.pitch;
     });
+
+    const auto allocation = allocateVoices (s.notes, maxVoices, releaseGuard);
+    s.voiceCount = allocation.voiceCount;
+    s.overflowNotes = allocation.overflowNotes;
 
     double end = 0.0;
     for (const auto& n : s.notes)

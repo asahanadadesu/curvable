@@ -99,7 +99,13 @@ private:
     PlaybackEngine engine;
     MidiEventList sketchEvents;
     std::vector<HostNote> hostNotes;
-    juce::MidiBuffer scratchMidi;
+    std::array<juce::MidiBuffer, Schedule::maxVoices> voiceMidi; ///< 第 i 个音源实例收到的 MIDI
+    int routingCount = 0; ///< 当前按几个实例分配声部（变化时重新开始发声）
+
+
+    void routeEvents (const MidiEventList&) noexcept;
+
+    std::atomic<int> wantedVoices { 1 }; ///< 当前工程需要的声部数（消息线程据此调整实例数）
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (CurvableProcessor)
 };

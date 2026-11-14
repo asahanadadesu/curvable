@@ -16,6 +16,7 @@ struct ScheduledNote
     int pitch = 60;
     int velocity = 100; ///< MIDI 力度 1..127
     PitchCurve curve;   ///< 已 normalise
+    int voice = 0;      ///< 分配到的声部（音源实例），见 VoiceAllocator
 };
 
 /** 从 Project 编译出的不可变回放数据。在后台/消息线程创建，交给音频线程只读使用。 */
@@ -25,6 +26,11 @@ struct Schedule
     std::vector<TriggerCue> cues;
     double length = 0.0;              ///< 内容长度，向上取整到小节
     double bendRange = Project::defaultBendRange;
+    int voiceCount = 1;    ///< 需要的声部（音源实例）数
+    int overflowNotes = 0; ///< 超出声部上限、被迫共用声部的音符数
+
+    static constexpr int maxVoices = 16;         ///< 声部（实例）上限
+    static constexpr double releaseGuard = 1.0;  ///< 释放尾音保护时长（拍）
 
     /** 编译：丢弃无效音符（音高越界、时长 <= 0、非有限值），力度换算为 1..127。 */
     static Schedule compile (const Project&);

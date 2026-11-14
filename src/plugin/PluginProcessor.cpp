@@ -57,7 +57,8 @@ CurvableProcessor::~CurvableProcessor()
 void CurvableProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 {
     engine.prepare (sampleRate);
-    scratchMidi.ensureSize (64 * 1024);
+    for (auto& m : voiceMidi)
+        m.ensureSize (16 * 1024);
     hosted.prepare (sampleRate, samplesPerBlock);
     setLatencySamples (hosted.getLatencySamples());
 }
@@ -103,25 +104,57 @@ void CurvableProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mi
         }
     }
 
-    // 2. 宿主 MIDI：TRIGGER 模式下音符只作为触发，不发给音源；其他消息（CC 等）照常通过
+    // 2. 声部 → 实例的对应关系：新的实例准备好（或被销毁）后，先在旧的对应关系下停掉所有音符，再重新开始，
+    //    避免 note on 和 note off 落在不同的实例上
+    const auto available = hosted.getNumInstances();
+
+    if (available != routingCount)
+    {
+        sketchEvents.clear();
+        engine.stopVoices (sketchEvents);
+        routeEvents (sketchEvents);   // 按旧的对应关系
+        routingCount = available;
+
+        sketchEvents.clear();
+        engine.resyncVoices (sketchEvents);
+        routeEvents (sketchEvents);   // 按新的对应关系
+    }
+
+    // 3. 宿主 MIDI：音符和弯音交给主实例（TRIGGER 模式下音符只作为触发，不发给音源）；
+    //    其他消息（CC、延音踏板等）发给所有实例
     hostNotes.clear();
-    scratchMidi.clear();
 
     for (const auto metadata : midi)
     {
         const auto message = metadata.getMessage();
 
-        if (mode == PlaybackMode::trigger && (message.isNoteOn() || message.isNoteOff()))
+        if (message.isNoteOn() || message.isNoteOff())
         {
-            if (hostNotes.size() < hostNotes.capacity())
-                hostNotes.push_back ({ metadata.samplePosition, message.isNoteOn(), message.getNoteNumber() });
+            if (mode == PlaybackMode::trigger)
+            {
+                if (hostNotes.size() < hostNotes.capacity())
+                    hostNotes.push_back ({ metadata.samplePosition, message.isNoteOn(), message.getNoteNumber() });
+            }
+            else
+            {
+                voiceMidi[0].addEvent (message, metadata.samplePosition);
+            }
             continue;
         }
 
-        scratchMidi.addEvent (message, metadata.samplePosition);
+        if (message.isPitchWheel())
+        {
+            voiceMidi[0].addEvent (message, metadata.samplePosition);
+            continue;
+        }
+
+        for (int i = 0; i < juce::jmax (1, routingCount); ++i)
+            voiceMidi[(std::size_t) i].addEvent (message, metadata.samplePosition);
     }
 
-    // 3. 回放 Curvable 自己的音符
+    midi.clear();
+
+    // 4. 回放 Curvable 自己的音符
     sketchEvents.clear();
     engine.process (mode, scheduleExchange.acquire(), transport, numSamples,
                     hostNotes.data(), (int) hostNotes.size(), sketchEvents);
@@ -133,31 +166,40 @@ void CurvableProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mi
     else
         playheadBeat = -1.0;
 
-    // 试听音符（来自卷帘和琴键）
+    // 试听音符（来自卷帘和琴键）交给主实例
     previewFifo.read (previewFifo.getNumReady()).forEach ([this] (int index)
     {
         const auto& e = previewEvents[(size_t) index];
-        scratchMidi.addEvent (e.velocity > 0 ? juce::MidiMessage::noteOn (1, e.pitch, (juce::uint8) e.velocity)
-                                             : juce::MidiMessage::noteOff (1, e.pitch), 0);
+        voiceMidi[0].addEvent (e.velocity > 0 ? juce::MidiMessage::noteOn (1, e.pitch, (juce::uint8) e.velocity)
+                                              : juce::MidiMessage::noteOff (1, e.pitch), 0);
     });
 
-    for (const auto& e : sketchEvents.get())
+    routeEvents (sketchEvents);
+
+    // 5. 交给音源发声（各实例的输出相加）
+    hosted.process (buffer, voiceMidi.data(), (int) voiceMidi.size(), getPlayHead(), isNonRealtime());
+}
+
+void CurvableProcessor::routeEvents (const MidiEventList& events) noexcept
+{
+    for (const auto& e : events.get())
     {
-        if (e.isPitchWheel)
-        {
-            scratchMidi.addEvent (juce::MidiMessage::pitchWheel (1, e.wheelValue), e.sampleOffset);
+        const bool hasOwnInstance = e.voice < routingCount;
+
+        // 声部的实例还没准备好：音符先交给主实例（暂时不弯），但弯音绝不能发过去，
+        // 否则会把主实例上其他音符的弯音弄乱
+        if (e.isPitchWheel && ! hasOwnInstance)
             continue;
-        }
 
-        scratchMidi.addEvent (e.noteOn ? juce::MidiMessage::noteOn (1, e.pitch, (juce::uint8) e.velocity)
-                                       : juce::MidiMessage::noteOff (1, e.pitch),
-                              e.sampleOffset);
+        auto& target = voiceMidi[(std::size_t) (hasOwnInstance ? e.voice : 0)];
+
+        if (e.isPitchWheel)
+            target.addEvent (juce::MidiMessage::pitchWheel (1, e.wheelValue), e.sampleOffset);
+        else if (e.noteOn)
+            target.addEvent (juce::MidiMessage::noteOn (1, e.pitch, (juce::uint8) e.velocity), e.sampleOffset);
+        else
+            target.addEvent (juce::MidiMessage::noteOff (1, e.pitch), e.sampleOffset);
     }
-
-    midi.swapWith (scratchMidi);
-
-    // 4. 交给音源发声
-    hosted.process (buffer, midi, getPlayHead(), isNonRealtime());
 }
 
 //==============================================================================
@@ -176,7 +218,9 @@ void CurvableProcessor::setProject (Project newProject, bool isUserEdit)
         const juce::ScopedLock sl (projectLock);
         project = std::move (newProject);
         playbackMode = project.mode;
-        scheduleExchange.publish (std::make_unique<Schedule> (Schedule::compile (project)));
+        auto schedule = std::make_unique<Schedule> (Schedule::compile (project));
+        wantedVoices = schedule->voiceCount;
+        scheduleExchange.publish (std::move (schedule));
     }
 
     projectChanged.sendChangeMessage();
@@ -264,6 +308,9 @@ void CurvableProcessor::changeListenerCallback (juce::ChangeBroadcaster*)
 void CurvableProcessor::timerCallback()
 {
     scheduleExchange.collectGarbage();
+
+    // 按工程需要的声部数准备音源实例（创建在后台进行）
+    hosted.setWantedInstances (wantedVoices.load());
 
     // 用户在 Curvable 或被托管的音源里改了东西：让宿主知道工程需要保存
     // （VST3 中通过 IComponentHandler2::setDirty 通知）
