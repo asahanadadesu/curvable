@@ -26,7 +26,17 @@ HostedInstrument::~HostedInstrument()
     }
 
     if (old != nullptr)
+    {
+        old->removeListener (&changeWatcher);
         old->releaseResources();
+    }
+}
+
+void HostedInstrument::noteUserChange() noexcept
+{
+    // 插件加载或恢复状态后，常常会异步发出一些变化通知，这些不算用户的改动
+    if (juce::Time::getMillisecondCounter() >= ignoreChangesUntil.load())
+        userChanged = true;
 }
 
 //==============================================================================
@@ -271,8 +281,16 @@ void HostedInstrument::install (std::unique_ptr<juce::AudioPluginInstance> newIn
         tailSeconds = instance != nullptr ? instance->getTailLengthSeconds() : 0.0;
     }
 
+    ignoreChangesUntil = juce::Time::getMillisecondCounter() + 1500;
+
+    if (instance != nullptr)
+        instance->addListener (&changeWatcher);
+
     if (old != nullptr)
+    {
+        old->removeListener (&changeWatcher);
         old->releaseResources(); // old 在离开作用域时于消息线程上销毁
+    }
 
     sendChangeMessage();
 }

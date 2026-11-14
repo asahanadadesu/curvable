@@ -33,6 +33,7 @@ private:
 
     void refresh();
     void setPage (Page);
+    void refreshModeButtons();
 
     /** 在 Synth 页嵌入音源界面（或隐藏它），并让窗口足够大。 */
     void updateEmbeddedEditor();
@@ -57,6 +58,15 @@ private:
     juce::TextButton pianoRollTab { "Piano roll" };
     juce::TextButton synthTab { "Synth" };
     juce::TextButton synthButton;
+
+    // 播放模式
+    juce::TextButton autoModeButton { "AUTO" };
+    juce::TextButton triggerModeButton { "TRIGGER" };
+    juce::TextButton offModeButton { "OFF" };
+
+    // 卷帘页（M2 临时）：测试乐句
+    juce::TextButton testPhraseButton { "Insert test phrase" };
+    juce::TextButton clearNotesButton { "Clear notes" };
     SynthBrowser browser;
 
     juce::String statusText;

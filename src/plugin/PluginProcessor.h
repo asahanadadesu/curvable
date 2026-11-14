@@ -1,7 +1,10 @@
 #pragma once
 
+#include "engine/PlaybackEngine.h"
+#include "engine/ScheduleExchange.h"
 #include "hosting/HostedInstrument.h"
 #include "hosting/HostingContext.h"
+#include "model/Project.h"
 
 #include <juce_audio_processors/juce_audio_processors.h>
 
@@ -9,7 +12,8 @@ namespace curvable
 {
 
 class CurvableProcessor final : public juce::AudioProcessor,
-                                private juce::ChangeListener
+                                private juce::ChangeListener,
+                                private juce::Timer
 {
 public:
     CurvableProcessor();
@@ -42,11 +46,40 @@ public:
     HostingContext& getHostingContext() noexcept { return *hostingContext; }
     HostedInstrument& getHostedInstrument() noexcept { return hosted; }
 
+    //==============================================================================
+    // 编辑内容（消息线程）
+
+    Project getProject() const;
+
+    /** @param isUserEdit  用户的编辑（会通知宿主"工程有未保存的改动"）；从宿主恢复状态时为 false */
+    void setProject (Project, bool isUserEdit = true);
+    void setPlaybackMode (PlaybackMode);
+
+    /** 通知宿主：工程有未保存的改动（例如换了音源）。任意线程可调用，实际通知在消息线程上发出。 */
+    void markStateChanged() noexcept { stateChanged = true; }
+
+    /** 编辑内容变化时（包括宿主恢复工程）发送 change 消息。 */
+    juce::ChangeBroadcaster projectChanged;
+
 private:
     void changeListenerCallback (juce::ChangeBroadcaster*) override;
+    void timerCallback() override;
 
     juce::SharedResourcePointer<HostingContext> hostingContext;
     HostedInstrument hosted { *hostingContext };
+
+    mutable juce::CriticalSection projectLock; ///< 宿主可能在其他线程保存/恢复状态
+    Project project;
+
+    ScheduleExchange scheduleExchange;
+    std::atomic<PlaybackMode> playbackMode { PlaybackMode::automatic };
+    std::atomic<bool> stateChanged { false };
+
+    // 以下只在音频线程使用（prepare / release 除外）
+    PlaybackEngine engine;
+    MidiEventList sketchEvents;
+    std::vector<HostNote> hostNotes;
+    juce::MidiBuffer scratchMidi;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (CurvableProcessor)
 };

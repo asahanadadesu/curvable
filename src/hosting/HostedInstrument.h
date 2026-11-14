@@ -57,6 +57,10 @@ public:
 
     juce::AudioProcessorEditor* getEditor() const noexcept { return editor.get(); }
 
+    /** 自上次调用以来，用户是否改动过音源（调参数、换预设等）。任意线程可调用。
+        刚加载或恢复后的短时间内，音源自己发出的变化通知会被忽略。 */
+    bool consumeUserChange() noexcept { return userChanged.exchange (false); }
+
     /** 保存为 ValueTree（类型为 "HostedPlugin"）；没有音源时返回无效的 ValueTree。 */
     juce::ValueTree saveState() const;
 
@@ -108,6 +112,25 @@ private:
     int loadGeneration = 0; ///< 让过时的异步加载结果作废
 
     std::unique_ptr<juce::AudioProcessorEditor> editor;
+
+    /** 监听被托管插件的参数和状态变化（可能在任意线程上回调）。 */
+    struct ChangeWatcher final : public juce::AudioProcessorListener
+    {
+        explicit ChangeWatcher (HostedInstrument& o) : owner (o) {}
+        void audioProcessorParameterChanged (juce::AudioProcessor*, int, float) override { owner.noteUserChange(); }
+        void audioProcessorChanged (juce::AudioProcessor*, const ChangeDetails& details) override
+        {
+            if (details.parameterInfoChanged || details.programChanged || details.nonParameterStateChanged)
+                owner.noteUserChange();
+        }
+        HostedInstrument& owner;
+    };
+
+    void noteUserChange() noexcept;
+
+    ChangeWatcher changeWatcher { *this };
+    std::atomic<bool> userChanged { false };
+    std::atomic<juce::uint32> ignoreChangesUntil { 0 };
 
     JUCE_DECLARE_WEAK_REFERENCEABLE (HostedInstrument)
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (HostedInstrument)

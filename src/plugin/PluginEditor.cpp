@@ -12,12 +12,19 @@ namespace
 
     constexpr int toolbarHeight = 44;
     constexpr int tabRadioGroup = 1001;
+    constexpr int modeRadioGroup = 1002;
 
-    constexpr int defaultMinWidth  = 640;
+    constexpr int defaultMinWidth  = 720;
     constexpr int defaultMinHeight = 400;
 
     // Synth 页的最小尺寸：工具栏要放得下；音源界面比这小时两侧留黑边
-    constexpr int synthPageMinWidth  = 560;
+    constexpr int synthPageMinWidth  = 480;
+
+    // 工具栏：窗口够宽时显示标题，否则省略标题、按钮变紧凑，以便贴合较窄的音源界面
+    constexpr int titleWidth = 130;
+    constexpr int wideToolbarWidth = 800;
+
+    bool isToolbarCompact (int width) noexcept { return width < wideToolbarWidth; }
     constexpr int synthPageMinHeight = 300;
 
     /** 插件扫描与管理窗口（JUCE 自带的 PluginListComponent）。 */
@@ -71,6 +78,45 @@ CurvableEditor::CurvableEditor (CurvableProcessor& p)
         addAndMakeVisible (tab);
     }
 
+    struct ModeButton { juce::TextButton* button; PlaybackMode mode; };
+
+    for (auto [button, mode] : { ModeButton { &autoModeButton, PlaybackMode::automatic },
+                                 ModeButton { &triggerModeButton, PlaybackMode::trigger },
+                                 ModeButton { &offModeButton, PlaybackMode::off } })
+    {
+        button->setClickingTogglesState (true);
+        button->setRadioGroupId (modeRadioGroup);
+        button->setColour (juce::TextButton::buttonOnColourId, accentColour.withAlpha (0.25f));
+        button->onClick = [this, button = button, mode = mode]
+        {
+            if (button->getToggleState())
+                processor.setPlaybackMode (mode);
+        };
+        addAndMakeVisible (button);
+    }
+
+    autoModeButton.setTooltip ("Play Curvable's notes along the host's timeline");
+    triggerModeButton.setTooltip ("A note in the host's piano roll starts playback; it loops while the note is held. Host notes make no sound.");
+    offModeButton.setTooltip ("Don't play Curvable's notes");
+
+    testPhraseButton.onClick = [this]
+    {
+        auto project = Project::createTestPhrase();
+        project.mode = processor.getProject().mode;
+        project.cues = processor.getProject().cues;
+        processor.setProject (std::move (project));
+    };
+    clearNotesButton.onClick = [this]
+    {
+        auto project = processor.getProject();
+        project.notes.clear();
+        processor.setProject (std::move (project));
+    };
+    addAndMakeVisible (testPhraseButton);
+    addAndMakeVisible (clearNotesButton);
+
+    processor.projectChanged.addChangeListener (this);
+
     pianoRollTab.setToggleState (true, juce::dontSendNotification);
     pianoRollTab.onClick = [this] { if (pianoRollTab.getToggleState()) setPage (Page::pianoRoll); };
     synthTab.onClick     = [this] { if (synthTab.getToggleState())     setPage (Page::synth); };
@@ -87,7 +133,7 @@ CurvableEditor::CurvableEditor (CurvableProcessor& p)
     browser.onDismiss       = [this] { hideSynthBrowser(); };
     browser.onBrowseFile    = [this] { hideSynthBrowser(); browseForPluginFile(); };
     browser.onPluginManager = [this] { showPluginManager(); };
-    browser.onUnload        = [this] { hideSynthBrowser(); message = {}; hosted.unload(); };
+    browser.onUnload        = [this] { hideSynthBrowser(); message = {}; hosted.unload(); processor.markStateChanged(); };
     addChildComponent (browser);
 
     hosted.addChangeListener (this);
@@ -104,6 +150,7 @@ CurvableEditor::CurvableEditor (CurvableProcessor& p)
 
 CurvableEditor::~CurvableEditor()
 {
+    processor.projectChanged.removeChangeListener (this);
     hosted.removeChangeListener (this);
     detachEmbeddedEditor();
 
@@ -124,14 +171,15 @@ void CurvableEditor::paint (juce::Graphics& g)
 
     g.setColour (juce::Colours::white);
     g.setFont (juce::FontOptions (20.0f, juce::Font::bold));
-    g.drawText ("Curvable", toolbar.removeFromLeft (130).withTrimmedLeft (16), juce::Justification::centredLeft);
+    if (! isToolbarCompact (getWidth()))
+        g.drawText ("Curvable", toolbar.removeFromLeft (titleWidth).withTrimmedLeft (16), juce::Justification::centredLeft);
 
     // 主体区域：Synth 页显示音源界面；卷帘页目前只显示状态，M3 替换为卷帘编辑器
     const bool showingSynth = embeddedEditor != nullptr && embeddedEditor->isVisible();
 
     if (showingSynth)
     {
-        g.setColour (juce::Colours::black);
+        g.setColour (backgroundColour);
         g.fillRect (getBodyArea());
     }
     else
@@ -159,7 +207,7 @@ void CurvableEditor::paint (juce::Graphics& g)
     {
         g.setColour (juce::Colours::white.withAlpha (0.35f));
         g.setFont (juce::FontOptions (13.0f));
-        g.drawText ("v" CURVABLE_VERSION_STRING " - M1 pass-through mode", getLocalBounds().removeFromBottom (28).withTrimmedRight (12),
+        g.drawText ("v" CURVABLE_VERSION_STRING " - M2 playback test build", getLocalBounds().removeFromBottom (28).withTrimmedRight (12),
                     juce::Justification::centredRight);
     }
 }
@@ -172,15 +220,33 @@ juce::Rectangle<int> CurvableEditor::getBodyArea() const
 void CurvableEditor::resized()
 {
     auto toolbar = getLocalBounds().removeFromTop (toolbarHeight).reduced (8, 7);
-    toolbar.removeFromLeft (130);
+    const bool compact = isToolbarCompact (getWidth());
 
-    pianoRollTab.setBounds (toolbar.removeFromLeft (100));
+    if (! compact)
+        toolbar.removeFromLeft (titleWidth);
+
+    const int gap = compact ? 8 : 16;
+
+    pianoRollTab.setBounds (toolbar.removeFromLeft (compact ? 88 : 100));
     toolbar.removeFromLeft (4);
-    synthTab.setBounds (toolbar.removeFromLeft (80));
+    synthTab.setBounds (toolbar.removeFromLeft (compact ? 64 : 80));
 
-    synthButton.setBounds (toolbar.removeFromRight (juce::jmin (280, toolbar.getWidth() / 2)));
+    toolbar.removeFromLeft (gap);
+    autoModeButton.setBounds (toolbar.removeFromLeft (compact ? 52 : 60));
+    triggerModeButton.setBounds (toolbar.removeFromLeft (compact ? 72 : 80));
+    offModeButton.setBounds (toolbar.removeFromLeft (compact ? 44 : 50));
+    toolbar.removeFromLeft (gap);
+
+    synthButton.setBounds (toolbar.removeFromRight (juce::jmin (280, toolbar.getWidth())));
 
     browser.setBounds (getBodyArea());
+
+    {
+        auto buttons = getBodyArea().withSizeKeepingCentre (340, 32).translated (0, 70);
+        testPhraseButton.setBounds (buttons.removeFromLeft (180));
+        buttons.removeFromLeft (10);
+        clearNotesButton.setBounds (buttons);
+    }
 
     if (auto* ed = embeddedEditor.getComponent(); ed != nullptr && ed->isVisible())
     {
@@ -200,8 +266,7 @@ void CurvableEditor::setPage (Page newPage)
     page = newPage;
     pianoRollTab.setToggleState (page == Page::pianoRoll, juce::dontSendNotification);
     synthTab.setToggleState (page == Page::synth, juce::dontSendNotification);
-    updateEmbeddedEditor();
-    repaint();
+    refresh();
 }
 
 void CurvableEditor::updateEmbeddedEditor()
@@ -209,6 +274,10 @@ void CurvableEditor::updateEmbeddedEditor()
     // 嵌入的音源界面是原生子窗口，会盖住 JUCE 绘制的浮层，所以浏览面板或拖拽提示出现时要隐藏它
     const bool wantVisible = page == Page::synth && hosted.isLoaded() && ! loading
                              && ! browser.isVisible() && ! dragHighlight;
+
+    const bool showPianoRollButtons = page == Page::pianoRoll && ! browser.isVisible() && ! dragHighlight;
+    testPhraseButton.setVisible (showPianoRollButtons);
+    clearNotesButton.setVisible (showPianoRollButtons);
 
     if (! wantVisible)
     {
@@ -351,15 +420,47 @@ void CurvableEditor::refresh()
     else if (loading)
         statusText = "Loading synth...";
     else if (hosted.isLoaded())
-        statusText = page == Page::pianoRoll
-                         ? "Play notes from the host's piano roll - they are passed straight to " + name + ".\n"
-                           "Curvable's own piano roll will live here."
-                         : name + " is loaded.";
+        statusText = name + " is loaded.";
     else
         statusText = "Click \"Load synth\" to pick one of your synths, or drag a plugin here.";
 
+    // 卷帘页（M2 临时）：显示内容概况和当前模式的说明
+    if (page == Page::pianoRoll && message.isEmpty() && hosted.getLastError().isEmpty() && ! loading)
+    {
+        const auto project = processor.getProject();
+        const auto bars = roundUpToBar (project.getContentEnd()) / 4.0;
+
+        juce::String summary = project.notes.empty()
+                                   ? juce::String ("No notes yet. Insert the test phrase to try playback.")
+                                   : juce::String ((int) project.notes.size()) + " notes, " + juce::String ((int) bars) + " bars.";
+
+        juce::String hint;
+
+        switch (project.mode)
+        {
+            case PlaybackMode::automatic: hint = "AUTO: plays along the host's timeline. Host notes go straight to the synth."; break;
+            case PlaybackMode::trigger:   hint = "TRIGGER: put a note in the host's piano roll - Curvable plays from the start "
+                                                 "and loops while the note is held. Host notes make no sound."; break;
+            case PlaybackMode::off:       hint = "OFF: Curvable's notes are muted. Host notes go straight to the synth."; break;
+        }
+
+        if (! hosted.isLoaded())
+            hint += "\nLoad a synth to hear anything.";
+
+        statusText = summary + "\n" + hint;
+    }
+
+    refreshModeButtons();
     updateEmbeddedEditor();
     repaint();
+}
+
+void CurvableEditor::refreshModeButtons()
+{
+    const auto mode = processor.getProject().mode;
+    autoModeButton.setToggleState (mode == PlaybackMode::automatic, juce::dontSendNotification);
+    triggerModeButton.setToggleState (mode == PlaybackMode::trigger, juce::dontSendNotification);
+    offModeButton.setToggleState (mode == PlaybackMode::off, juce::dontSendNotification);
 }
 
 void CurvableEditor::showSynthBrowser()
@@ -401,8 +502,12 @@ void CurvableEditor::loadDescription (const juce::PluginDescription& desc)
         if (auto* editor = safeThis.getComponent())
         {
             if (error.isEmpty())
+            {
                 if (const auto loaded = editor->hosted.getLoadedDescription())
                     editor->context.markRecentlyUsed (*loaded);
+
+                editor->processor.markStateChanged();
+            }
 
             editor->loading = false;
 

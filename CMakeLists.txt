@@ -19,7 +19,11 @@ add_subdirectory(libs/JUCE)
 # curvable_core: 与 JUCE 无关的纯 C++ 逻辑（model / engine），便于单元测试
 # ---------------------------------------------------------------------------
 add_library(curvable_core STATIC
+    src/model/Project.cpp
     src/engine/PitchBend.cpp
+    src/engine/Schedule.cpp
+    src/engine/SketchPlayer.cpp
+    src/engine/PlaybackEngine.cpp
     src/hosting/FLDatabaseParser.cpp
 )
 target_include_directories(curvable_core PUBLIC src)
@@ -55,6 +59,11 @@ juce_add_plugin(Curvable
     COPY_PLUGIN_AFTER_BUILD FALSE
 )
 
+# 依赖 JUCE 的模型代码（插件本体与单元测试共用）
+set(CURVABLE_JUCE_MODEL_SOURCES
+    ${PROJECT_SOURCE_DIR}/src/model/ProjectSerializer.cpp
+)
+
 # 托管其他插件的代码（插件本体与托管冒烟测试共用）
 set(CURVABLE_HOSTING_SOURCES
     src/hosting/HostingContext.cpp
@@ -74,6 +83,7 @@ target_sources(Curvable PRIVATE
     src/plugin/PluginProcessor.cpp
     src/plugin/PluginEditor.cpp
     src/ui/SynthBrowser.cpp
+    ${CURVABLE_JUCE_MODEL_SOURCES}
     ${CURVABLE_HOSTING_SOURCES}
 )
 

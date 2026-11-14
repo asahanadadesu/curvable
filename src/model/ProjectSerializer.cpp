@@ -1,0 +1,139 @@
+#include "model/ProjectSerializer.h"
+
+namespace curvable
+{
+
+namespace
+{
+    namespace ids
+    {
+        const juce::Identifier version  { "version" };
+        const juce::Identifier mode     { "mode" };
+        const juce::Identifier nextId   { "nextId" };
+        const juce::Identifier note     { "Note" };
+        const juce::Identifier cue      { "Cue" };
+        const juce::Identifier id       { "id" };
+        const juce::Identifier start    { "start" };
+        const juce::Identifier length   { "length" };
+        const juce::Identifier end      { "end" };
+        const juce::Identifier pitch    { "pitch" };
+        const juce::Identifier velocity { "velocity" };
+        const juce::Identifier key      { "key" };
+    }
+
+    // 枚举按名字保存，以后调整枚举顺序也不会读错
+    juce::String modeToString (PlaybackMode mode)
+    {
+        switch (mode)
+        {
+            case PlaybackMode::automatic: return "auto";
+            case PlaybackMode::trigger:   return "trigger";
+            case PlaybackMode::off:       return "off";
+        }
+
+        return "auto";
+    }
+
+    PlaybackMode modeFromString (const juce::String& s)
+    {
+        if (s == "trigger") return PlaybackMode::trigger;
+        if (s == "off")     return PlaybackMode::off;
+        return PlaybackMode::automatic;
+    }
+
+    // 64 位 id 存成字符串：ValueTree 的 var 在 XML 中对 int64 的支持不稳定
+    juce::String idToString (NoteId id)              { return juce::String ((juce::uint64) id); }
+    NoteId idFromVar (const juce::var& v)            { return (NoteId) v.toString().getLargeIntValue(); }
+}
+
+juce::ValueTree ProjectSerializer::toValueTree (const Project& project)
+{
+    juce::ValueTree tree (type);
+    tree.setProperty (ids::version, currentVersion, nullptr);
+    tree.setProperty (ids::mode, modeToString (project.mode), nullptr);
+    tree.setProperty (ids::nextId, idToString (project.nextId), nullptr);
+
+    for (const auto& n : project.notes)
+    {
+        juce::ValueTree note (ids::note);
+        note.setProperty (ids::id, idToString (n.id), nullptr);
+        note.setProperty (ids::start, n.start, nullptr);
+        note.setProperty (ids::length, n.length, nullptr);
+        note.setProperty (ids::pitch, n.pitch, nullptr);
+        note.setProperty (ids::velocity, n.velocity, nullptr);
+        tree.appendChild (note, nullptr);
+    }
+
+    for (const auto& c : project.cues)
+    {
+        juce::ValueTree cue (ids::cue);
+        cue.setProperty (ids::key, c.key, nullptr);
+        cue.setProperty (ids::start, c.start, nullptr);
+        cue.setProperty (ids::end, c.end, nullptr);
+        tree.appendChild (cue, nullptr);
+    }
+
+    return tree;
+}
+
+std::optional<Project> ProjectSerializer::fromValueTree (const juce::ValueTree& tree)
+{
+    if (! tree.hasType (type))
+        return std::nullopt;
+
+    if ((int) tree.getProperty (ids::version, 1) > currentVersion)
+        return std::nullopt; // 由更新版本的 Curvable 保存，不冒险读取
+
+    Project project;
+    project.notes.clear();
+    project.cues.clear();
+    project.mode = modeFromString (tree.getProperty (ids::mode).toString());
+
+    NoteId maxId = 0;
+
+    for (const auto& child : tree)
+    {
+        if (child.hasType (ids::note))
+        {
+            Note n;
+            n.id       = idFromVar (child.getProperty (ids::id));
+            n.start    = child.getProperty (ids::start, 0.0);
+            n.length   = child.getProperty (ids::length, 1.0);
+            n.pitch    = child.getProperty (ids::pitch, 60);
+            n.velocity = (float) (double) child.getProperty (ids::velocity, 0.8);
+            project.notes.push_back (n);
+            maxId = std::max (maxId, n.id);
+        }
+        else if (child.hasType (ids::cue))
+        {
+            TriggerCue c;
+            c.key   = child.getProperty (ids::key, TriggerCue::anyKey);
+            c.start = child.getProperty (ids::start, 0.0);
+            c.end   = child.getProperty (ids::end, 0.0);
+            project.cues.push_back (c);
+        }
+    }
+
+    // 旧数据或手工编辑导致 id 缺失/重复时，重新分配，保证唯一
+    {
+        std::vector<NoteId> seen;
+        seen.reserve (project.notes.size());
+
+        for (auto& n : project.notes)
+        {
+            if (n.id == 0 || std::find (seen.begin(), seen.end(), n.id) != seen.end())
+                n.id = ++maxId;
+
+            seen.push_back (n.id);
+        }
+    }
+
+    project.nextId = std::max (idFromVar (tree.getProperty (ids::nextId)), maxId + 1);
+
+    if (project.cues.empty())
+        project.cues.push_back ({});
+
+    return project;
+}
+
+} // namespace curvable
