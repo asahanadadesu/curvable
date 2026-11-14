@@ -1,5 +1,6 @@
 add_executable(curvable_tests
     PitchBendTests.cpp
+    FLDatabaseParserTests.cpp
 )
 target_link_libraries(curvable_tests PRIVATE curvable_core Catch2::Catch2WithMain)
 

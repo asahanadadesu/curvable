@@ -20,6 +20,7 @@ add_subdirectory(libs/JUCE)
 # ---------------------------------------------------------------------------
 add_library(curvable_core STATIC
     src/engine/PitchBend.cpp
+    src/hosting/FLDatabaseParser.cpp
 )
 target_include_directories(curvable_core PUBLIC src)
 target_compile_features(curvable_core PUBLIC cxx_std_20)
@@ -54,17 +55,29 @@ juce_add_plugin(Curvable
     COPY_PLUGIN_AFTER_BUILD FALSE
 )
 
-target_sources(Curvable PRIVATE
-    src/plugin/PluginProcessor.cpp
-    src/plugin/PluginEditor.cpp
+# 托管其他插件的代码（插件本体与托管冒烟测试共用）
+set(CURVABLE_HOSTING_SOURCES
+    src/hosting/HostingContext.cpp
+    src/hosting/HostedInstrument.cpp
 )
 
-target_compile_definitions(Curvable PUBLIC
+set(CURVABLE_JUCE_DEFINITIONS
     JUCE_WEB_BROWSER=0
     JUCE_USE_CURL=0
     JUCE_VST3_CAN_REPLACE_VST2=0
+    JUCE_PLUGINHOST_VST3=1
+    $<$<PLATFORM_ID:Darwin>:JUCE_PLUGINHOST_AU=1>
     CURVABLE_VERSION_STRING="${PROJECT_VERSION}"
 )
+
+target_sources(Curvable PRIVATE
+    src/plugin/PluginProcessor.cpp
+    src/plugin/PluginEditor.cpp
+    src/ui/SynthBrowser.cpp
+    ${CURVABLE_HOSTING_SOURCES}
+)
+
+target_compile_definitions(Curvable PUBLIC ${CURVABLE_JUCE_DEFINITIONS})
 
 target_link_libraries(Curvable
     PRIVATE
@@ -84,4 +97,41 @@ if(CURVABLE_BUILD_TESTS)
     enable_testing()
     add_subdirectory(libs/Catch2)
     add_subdirectory(tests)
+endif()
+
+# ---------------------------------------------------------------------------
+# 托管冒烟测试：加载一个真实的音源插件，检查发声与状态保存/恢复
+# 用法：curvable_hosting_smoke <插件路径>
+# 配置时指定 -DCURVABLE_SMOKE_PLUGIN=<插件路径> 则注册为 ctest 测试
+# ---------------------------------------------------------------------------
+option(CURVABLE_BUILD_SMOKE_TEST "Build the plugin-hosting smoke test" ON)
+set(CURVABLE_SMOKE_PLUGIN "" CACHE FILEPATH "Synth plugin used by the hosting smoke test (optional)")
+
+if(CURVABLE_BUILD_SMOKE_TEST)
+    juce_add_console_app(curvable_hosting_smoke PRODUCT_NAME "curvable_hosting_smoke")
+    target_sources(curvable_hosting_smoke PRIVATE
+        tests/smoke/HostingSmokeTest.cpp
+        ${CURVABLE_HOSTING_SOURCES}
+    )
+    target_include_directories(curvable_hosting_smoke PRIVATE src)
+    target_compile_definitions(curvable_hosting_smoke PRIVATE
+        ${CURVABLE_JUCE_DEFINITIONS}
+        JUCE_MODAL_LOOPS_PERMITTED=1
+    )
+    target_link_libraries(curvable_hosting_smoke
+        PRIVATE
+            curvable_core
+            juce::juce_audio_utils
+            juce::juce_audio_processors
+        PUBLIC
+            juce::juce_recommended_config_flags
+            juce::juce_recommended_warning_flags
+    )
+    if(MSVC)
+        target_compile_options(curvable_hosting_smoke PRIVATE /utf-8)
+    endif()
+
+    if(CURVABLE_BUILD_TESTS AND CURVABLE_SMOKE_PLUGIN)
+        add_test(NAME hosting_smoke COMMAND curvable_hosting_smoke "${CURVABLE_SMOKE_PLUGIN}")
+    endif()
 endif()
