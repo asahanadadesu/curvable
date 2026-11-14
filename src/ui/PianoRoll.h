@@ -100,6 +100,12 @@ private:
     void paste();
     void duplicateSelection();
 
+    /** 把选中的音符合并成一个音符，用滑音连起来（G）。 */
+    void glideSelection();
+
+    /** 在底部提示栏显示几秒钟的提醒（例如操作无法完成的原因）。 */
+    void flashMessage (const juce::String&);
+
     void preview (int pitch, float velocity);
 
     juce::Rectangle<int> getGridBounds() const;
@@ -134,6 +140,9 @@ private:
     Project dragOrigin;
 
     int previewPitch = -1;
+
+    juce::String flashText;
+    juce::uint32 flashUntil = 0;
 
     juce::String statusText;
     bool statusIsError = false;

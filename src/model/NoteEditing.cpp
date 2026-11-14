@@ -164,6 +164,126 @@ IdSet duplicateNotes (Project& p, const IdSet& ids, double grid)
     return pasteNotes (p, copyNotes (p, ids), b.minStart + offset);
 }
 
+//==============================================================================
+GlideResult glideNotes (Project& p, const IdSet& ids, double glideBeats)
+{
+    std::vector<Note> chain;
+
+    for (const auto& n : p.notes)
+        if (ids.count (n.id) != 0)
+            chain.push_back (n);
+
+    if (chain.size() < 2)
+        return { 0, GlideResult::Error::tooFewNotes };
+
+    std::stable_sort (chain.begin(), chain.end(), [] (const Note& a, const Note& b) { return a.start < b.start; });
+
+    for (std::size_t i = 1; i < chain.size(); ++i)
+        if (chain[i].start - chain[i - 1].start < 1.0e-9)
+            return { 0, GlideResult::Error::sameStart };
+
+    const auto& first = chain.front();
+    const auto origin = first.start;
+    double end = 0.0;
+
+    for (const auto& n : chain)
+        end = std::max (end, n.getEnd());
+
+    // 每个音符在合并后的音符里占据 [regionStart, regionEnd)：从它的起点到滑向下一个音符的开始
+    const auto count = chain.size();
+    std::vector<double> regionStart (count), regionEnd (count);
+
+    for (std::size_t i = 0; i < count; ++i)
+        regionStart[i] = chain[i].start - origin;
+
+    for (std::size_t i = 0; i < count; ++i)
+    {
+        if (i + 1 < count)
+        {
+            const auto ownEnd = chain[i].getEnd() - origin;
+
+            if (ownEnd < regionStart[i + 1] - 1.0e-9)
+            {
+                // 两个音符之间有空隙：斜坡从前一个音符的终点开始，到下一个音符的起点为止
+                regionEnd[i] = ownEnd;
+            }
+            else
+            {
+                // 首尾相接或重叠：没有空隙可用，在下一个音符的起点前留出一小段滑音
+                const auto glide = std::max (1.0e-6, std::min (glideBeats, (regionStart[i + 1] - regionStart[i]) * 0.5));
+                regionEnd[i] = regionStart[i + 1] - glide;
+            }
+        }
+        else
+        {
+            regionEnd[i] = end - origin;
+        }
+    }
+
+    PitchCurve merged;
+
+    for (std::size_t i = 0; i < count; ++i)
+    {
+        const auto& n = chain[i];
+        const auto& c = n.curve;
+        const auto offset = (double) (n.pitch - first.pitch);
+        const auto a = regionStart[i], b = regionEnd[i];
+        const auto localEnd = b - a;
+
+        // 颤音参数取第一个有颤音的音符的
+        if (c.hasVibrato() && ! merged.hasVibrato())
+        {
+            const auto keepWhole = merged.vibrato.wholeNote;
+            merged.vibrato = c.vibrato;
+            merged.vibrato.wholeNote = keepWhole;
+        }
+
+        // 这一段在本音符自己曲线里的某个时刻：弯曲程度和颤音
+        auto segmentTension = [&] (double t) { const auto s = c.segmentAt (t); return s >= 0 ? c.points[(size_t) s].tension : 0.0f; };
+        auto segmentVibrato = [&] (double t)
+        {
+            if (c.vibrato.wholeNote)
+                return true;
+
+            const auto s = c.segmentAt (t);
+            return s >= 0 && c.points[(size_t) s].vibrato;
+        };
+
+        auto add = [&] (double t, float tension, bool vibrato)
+        {
+            merged.points.push_back ({ a + t, c.evaluate (t) + offset, tension, vibrato });
+        };
+
+        // 起点、本音符曲线在区间内的节点、终点（滑音从这里开始）
+        add (0.0, segmentTension (0.0), segmentVibrato (0.0));
+
+        // 最后一个音符没有滑出段，它在终点上的节点（例如 Fall 的终点）也要保留
+        const auto isLast = i + 1 == count;
+
+        for (const auto& point : c.points)
+            if (point.time > 1.0e-9 && (isLast ? point.time <= localEnd + 1.0e-9 : point.time < localEnd - 1.0e-9))
+                add (point.time, point.tension, segmentVibrato (point.time));
+
+        if (! isLast)
+            add (localEnd, 0.0f, false); // 滑音段：直线、没有颤音
+    }
+
+    merged.normalise();
+
+    // 换上合并后的音符
+    const auto id = first.id;
+    std::erase_if (p.notes, [&] (const Note& n) { return ids.count (n.id) != 0 && n.id != id; });
+
+    if (auto* target = findNote (p, id))
+    {
+        target->start = origin;
+        target->length = end - origin;
+        target->curve = merged;
+    }
+
+    return { id, GlideResult::Error::none };
+}
+
 IdSet notesInRange (const Project& p, double beatStart, double beatEnd, int pitchLow, int pitchHigh)
 {
     if (beatEnd < beatStart)

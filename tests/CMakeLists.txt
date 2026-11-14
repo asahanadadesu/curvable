@@ -14,6 +14,7 @@ target_sources(curvable_tests PRIVATE
     PitchCurveTests.cpp
     VoiceAllocatorTests.cpp
     ExpressionTests.cpp
+    GlideTests.cpp
     ${CURVABLE_JUCE_MODEL_SOURCES}
 )
 

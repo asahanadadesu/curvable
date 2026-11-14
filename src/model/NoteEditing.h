@@ -51,6 +51,30 @@ IdSet pasteNotes (Project&, const std::vector<Note>& clip, double atBeat);
 /** 把选中的音符复制一份放在它们之后（偏移量为选区长度，按网格向上取整），返回新音符的 id。 */
 IdSet duplicateNotes (Project&, const IdSet& ids, double grid);
 
+//==============================================================================
+// 连奏（把一串音符合并成一个音符，用滑音连起来）
+
+struct GlideResult
+{
+    enum class Error { none, tooFewNotes, sameStart };
+
+    NoteId id = 0;           ///< 合并后的音符（沿用第一个音符的 id）
+    Error error = Error::none;
+};
+
+/** 默认的滑音时长（拍）。 */
+constexpr double defaultGlideBeats = 0.25;
+
+/** 把 ids 中的音符按起点顺序合并成一个音符：
+    - 起点 = 第一个音符的起点，终点 = 最晚的终点；音高、力度沿用第一个音符；
+    - 后面每个音符变成曲线上的偏移（它的音高 − 第一个音符的音高）；
+      两个音符之间有空隙时，斜坡从前一个音符的终点开始、在后一个音符的起点到达；
+      首尾相接或重叠时，斜坡在后一个音符的起点前 min (glideBeats, 两个起点间距的一半) 开始；
+    - 每个音符原有的曲线（节点、弯曲程度、颤音段）平移到它在合并后音符里的位置；
+      整个音符的颤音变成它那一段的颤音段；颤音参数取第一个有颤音的音符的。
+    至少两个音符；有两个音符起点相同（和弦）时不合并。 */
+GlideResult glideNotes (Project&, const IdSet& ids, double glideBeats = defaultGlideBeats);
+
 /** 与 [beatStart, beatEnd) × [pitchLow, pitchHigh] 有重叠的音符。 */
 IdSet notesInRange (const Project&, double beatStart, double beatEnd, int pitchLow, int pitchHigh);
 

@@ -986,9 +986,16 @@ struct PianoRoll::NoteArea final : public juce::Component
         const auto hasVibrato = curve.hasVibrato();
         const auto targets = owner.selection.count (id) != 0 ? owner.selection : editing::IdSet { id };
 
-        enum { segmentId = 1, wholeId, syncId, removeId, clearId, shapeBase = 100 };
+        enum { segmentId = 1, wholeId, syncId, removeId, clearId, glideId, shapeBase = 100 };
 
         juce::PopupMenu menu;
+
+        if (targets.size() >= 2)
+        {
+            menu.addItem (glideId, "Glide into one note (G)");
+            menu.addSeparator();
+        }
+
         menu.addSectionHeader ("Vibrato");
         menu.addItem (segmentId, segment >= 0 ? "Vibrato on this segment" : "Vibrato on this segment (add points first)",
                       segment >= 0, segmentOn);
@@ -1047,6 +1054,10 @@ struct PianoRoll::NoteArea final : public juce::Component
 
             switch (result)
             {
+                case glideId:
+                    o.glideSelection();
+                    break;
+
                 case segmentId:
                     // 只作用于右键的那个音符（"这一段"只对它有意义）
                     o.edit ("Change vibrato", [&] (Project& p)
@@ -1090,11 +1101,34 @@ struct PianoRoll::NoteArea final : public juce::Component
         if (hit.id == 0)
         {
             setFocusNote (0);
+
+            // Ctrl + 拖动：框选（例如选出要连成滑音的一串音符）
+            if (e.mods.isCommandDown())
+            {
+                mode = Mode::marquee;
+                marqueeBase = e.mods.isShiftDown() ? owner.selection : editing::IdSet {};
+                marquee = {};
+
+                if (! e.mods.isShiftDown())
+                    owner.setSelection ({});
+                return;
+            }
+
             owner.setSelection ({});
             return;
         }
 
         setFocusNote (hit.id);
+
+        // Shift + 单击音符：加选 / 取消选中（不加节点）
+        if (e.mods.isShiftDown() && ! e.mods.isPopupMenu() && hit.point < 0 && hit.segment < 0 && hit.vibratoHandle == 0)
+        {
+            auto sel = owner.selection;
+            if (! sel.erase (hit.id))
+                sel.insert (hit.id);
+            owner.setSelection (sel);
+            return;
+        }
 
         // 右键：节点上删除节点；音符上弹出菜单（颤音、常用手法）。右键选区里的音符时，菜单作用于整个选区
         if (e.mods.isPopupMenu())
@@ -1468,6 +1502,8 @@ struct PianoRoll::ShortcutsPanel final : public juce::Component
                 { "Right-click a point", "Delete it" },
                 { "Double-click a note", "Remove its whole curve" },
                 { "Right-click a note", "Vibrato and ready-made bends" },
+                { "G  (2+ notes selected)", "Glide: merge into one legato note" },
+                { "Shift+click / Ctrl+drag", "Select several notes" },
                 { "Drag the diamond", "Vibrato depth (up/down), speed (left/right)" },
                 { "Drag the bar below", "Vibrato fade-in length" },
             } },
@@ -1489,7 +1525,7 @@ struct PianoRoll::ShortcutsPanel final : public juce::Component
         g.fillAll (p.bg.withAlpha (0.82f));
 
         // 按固定的逻辑尺寸排版，窗口太小时整体缩小
-        constexpr float cardW = 760.0f, cardH = 620.0f;
+        constexpr float cardW = 760.0f, cardH = 660.0f;
         const auto area = getLocalBounds().toFloat().reduced (12.0f);
         const auto scale = juce::jmin (1.0f, area.getWidth() / cardW, area.getHeight() / cardH);
         const auto card = juce::Rectangle<float> (cardW * scale, cardH * scale).withCentre (area.getCentre());
@@ -1736,6 +1772,9 @@ juce::String PianoRoll::getHint() const
 
 juce::String PianoRoll::getWarning() const
 {
+    if (flashText.isNotEmpty() && juce::Time::getMillisecondCounter() < flashUntil)
+        return flashText;
+
     if (! overflowNotes.empty())
         return juce::String ((int) overflowNotes.size()) + " notes (red outline) have to share synth copies: too many different"
                " bends at once (limit " + juce::String (Schedule::maxVoices) + "). While they overlap, they follow the newest one's bend.";
@@ -2084,6 +2123,7 @@ bool PianoRoll::keyPressed (const juce::KeyPress& key)
     if (! cmd && (code == 'P' || code == 'p')) { setTool (Tool::draw); return true; }
     if (! cmd && (code == 'E' || code == 'e')) { setTool (Tool::select); return true; }
     if (! cmd && (code == 'C' || code == 'c')) { setTool (Tool::curve); return true; }
+    if (! cmd && (code == 'G' || code == 'g')) { glideSelection(); return true; }
     if (code == juce::KeyPress::escapeKey)     { setSelection ({}); return true; }
     if (code == juce::KeyPress::F1Key || key.getTextCharacter() == '?') { showShortcuts (true); return true; }
 
@@ -2121,8 +2161,55 @@ void PianoRoll::stopPreview()
     previewPitch = -1;
 }
 
+void PianoRoll::flashMessage (const juce::String& text)
+{
+    flashText = text;
+    flashUntil = juce::Time::getMillisecondCounter() + 4000;
+    repaint (getLocalBounds().removeFromBottom (bottomBarHeight));
+}
+
+void PianoRoll::glideSelection()
+{
+    if (selection.size() < 2)
+    {
+        flashMessage ("Select two or more notes to glide between (Shift+click or Ctrl+drag).");
+        return;
+    }
+
+    // 先在副本上试一次，不能合并时不留下撤销记录
+    auto trial = project;
+    const auto result = editing::glideNotes (trial, selection);
+
+    if (result.error == editing::GlideResult::Error::sameStart)
+    {
+        flashMessage ("Can't glide: some selected notes start together. Select one line of notes, not a chord.");
+        return;
+    }
+
+    if (result.error != editing::GlideResult::Error::none)
+        return;
+
+    const auto ids = selection;
+    edit ("Glide notes", [&] (Project& p) { editing::glideNotes (p, ids); });
+    setSelection ({ result.id });
+
+    // 偏移超出弯音范围时提醒（之后底部会一直显示，直到解决）
+    if (const auto* n = editing::findNote (project, result.id); n != nullptr
+        && n->curve.getMaxAbsOffset (n->length) > project.bendRange + 1.0e-9)
+        flashMessage ("This glide needs Bend " + juce::String::fromUTF8 ("\xc2\xb1")
+                      + juce::String ((int) std::ceil (n->curve.getMaxAbsOffset (n->length) - 1.0e-9))
+                      + " or more. Raise Bend (and your synth's range to match).");
+}
+
 void PianoRoll::timerCallback()
 {
+    // 提醒到期后恢复原来的提示
+    if (flashText.isNotEmpty() && juce::Time::getMillisecondCounter() >= flashUntil)
+    {
+        flashText = {};
+        repaint (getLocalBounds().removeFromBottom (bottomBarHeight));
+    }
+
     const auto beat = processor.getPlayheadBeat();
 
     if (std::abs (beat - playheadBeat) < 1.0e-6)
