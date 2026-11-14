@@ -83,6 +83,9 @@ private:
     void repaintContent();
     juce::String getHint() const;
 
+    /** 需要用户注意的问题（声部不够、弯音超出范围）；没有时为空。 */
+    juce::String getWarning() const;
+
     // 工具与吸附
     void setTool (Tool);
     void showSnapMenu();
@@ -120,6 +123,7 @@ private:
 
     Project project;          ///< 当前工程的本地副本（显示用）
     editing::IdSet selection;
+    editing::IdSet overflowNotes; ///< 因为声部不够而与别的音符共用音源实例的音符
     Tool tool = Tool::draw;
     double grid = 0.25;       ///< 吸附网格（拍）；0 表示不吸附
     double defaultLength = 1.0;

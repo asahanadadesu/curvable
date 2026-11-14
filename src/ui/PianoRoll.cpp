@@ -440,6 +440,15 @@ struct PianoRoll::NoteArea final : public juce::Component
                 g.setColour (p.warm);
                 g.strokePath (path, juce::PathStrokeType (2.0f));
             }
+            else if (owner.overflowNotes.count (n.id) != 0)
+            {
+                // 声部不够：弯音会受别的音符影响
+                juce::Path dashed;
+                const float dashes[] = { 4.0f, 3.0f };
+                juce::PathStrokeType (1.6f).createDashedStroke (dashed, path, dashes, 2);
+                g.setColour (p.error);
+                g.fillPath (dashed);
+            }
 
             if (r.getWidth() > 34.0f && r.getHeight() >= 10.0f)
             {
@@ -1304,9 +1313,10 @@ void PianoRoll::paint (juce::Graphics& g)
     auto statusArea = getLocalBounds().removeFromBottom (bottomBarHeight)
                           .withTrimmedLeft (bendButton.getRight() + 12)
                           .withRight (helpButton.getX() - 8);
-    g.setColour (statusIsError ? palette.error : palette.muted);
+    const auto warning = getWarning();
+    g.setColour (statusIsError || (statusText.isEmpty() && warning.isNotEmpty()) ? palette.error : palette.muted);
     g.setFont (juce::FontOptions (12.5f));
-    g.drawFittedText (statusText.isNotEmpty() ? statusText : getHint(),
+    g.drawFittedText (statusText.isNotEmpty() ? statusText : (warning.isNotEmpty() ? warning : getHint()),
                       statusArea, juce::Justification::centredRight, 1, 0.9f);
 }
 
@@ -1314,14 +1324,7 @@ juce::String PianoRoll::getHint() const
 {
     // 只提示界面上看不出来的操作：工具、吸附、力度、滚动都有可见的控件，完整列表在 ? 里
     if (tool == Tool::curve)
-    {
-        // 有弯音超出范围时优先提示（否则发声时会被截断）
-        for (const auto& n : project.notes)
-            if (n.curve.getMaxAbsOffset (n.length) > project.bendRange + 1.0e-9)
-                return "Some bends go past the bend range. Raise Bend (and your synth's range to match).";
-
         return "Click a note  Add point    Drag circle  Shape    Right-click point  Delete    Alt  No snap";
-    }
 
     if (! selection.empty())
         return juce::String::fromUTF8 ("↑↓  Transpose    Ctrl+B  Duplicate    Del  Delete    Alt+drag  No snap");
@@ -1329,8 +1332,29 @@ juce::String PianoRoll::getHint() const
     return "Right-click  Delete    Ctrl+wheel  Zoom    Alt+drag  No snap";
 }
 
+juce::String PianoRoll::getWarning() const
+{
+    if (! overflowNotes.empty())
+        return juce::String ((int) overflowNotes.size()) + " notes (red outline) have to share synth copies: too many different"
+               " bends at once (limit " + juce::String (Schedule::maxVoices) + "). While they overlap, they follow the newest one's bend.";
+
+    for (const auto& n : project.notes)
+        if (n.curve.getMaxAbsOffset (n.length) > project.bendRange + 1.0e-9)
+            return "Some bends go past the bend range. Raise Bend (and your synth's range to match).";
+
+    return {};
+}
+
 void PianoRoll::repaintContent()
 {
+    // 声部分配与发声时相同（Schedule::compile），标出声部不够用的音符
+    overflowNotes.clear();
+
+    if (project.notes.size() > (size_t) Schedule::maxVoices)
+        for (const auto& n : Schedule::compile (project).notes)
+            if (n.overflow)
+                overflowNotes.insert (n.id);
+
     noteArea->repaint();
     velocityLane->repaint();
     repaint (getLocalBounds().removeFromBottom (bottomBarHeight)); // 提示随选择变化

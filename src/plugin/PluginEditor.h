@@ -11,7 +11,8 @@ namespace curvable
 class CurvableEditor final : public juce::AudioProcessorEditor,
                              public juce::FileDragAndDropTarget,
                              private juce::ChangeListener,
-                             private juce::ComponentListener
+                             private juce::ComponentListener,
+                             private juce::Timer
 {
 public:
     explicit CurvableEditor (CurvableProcessor&);
@@ -36,6 +37,24 @@ private:
         void paint (juce::Graphics& g) override { if (painter) painter (g); }
     };
 
+    /** 浮在卷帘上方的一次性提示卡片（带"知道了"按钮）。 */
+    struct NoticeCard final : public juce::Component
+    {
+        explicit NoticeCard (const Palette& p) : palette (p)
+        {
+            CurvableLookAndFeel::setStyle (dismissButton, "pill");
+            dismissButton.setWantsKeyboardFocus (false);
+            addAndMakeVisible (dismissButton);
+        }
+
+        void paint (juce::Graphics&) override;
+        void resized() override { dismissButton.setBounds (getLocalBounds().removeFromRight (104).reduced (6, 4)); }
+
+        const Palette& palette;
+        juce::String text;
+        juce::TextButton dismissButton { "Got it" };
+    };
+
     /** 圆形图标按钮（设置）。 */
     struct GearButton final : public juce::Button
     {
@@ -49,10 +68,12 @@ private:
     void componentBeingDeleted (juce::Component&) override;
 
     void refresh();
+    void timerCallback() override;
     void setPage (Page);
     void refreshModeButtons();
     void applyTheme (bool dark);
     void showSettingsMenu();
+    void updateNotice();
     void rebuildChrome();
 
     /** 在 Synth 页嵌入音源界面（或隐藏它），并让窗口贴合它。 */
@@ -90,6 +111,7 @@ private:
     PianoRoll pianoRoll { processor, palette };
     SynthBrowser browser;
     Overlay overlay;
+    NoticeCard copiesNotice { palette };
 
     juce::Rectangle<int> logoBounds, tabsBounds, modesBounds;
     juce::Image chrome;
@@ -98,6 +120,7 @@ private:
     bool statusIsError = false;
     bool loading = false;
     bool dragHighlight = false;
+    int shownAwake = -1; ///< 音源按钮上显示的运行中实例数
 
     Page page = Page::pianoRoll;
     juce::Component::SafePointer<juce::AudioProcessorEditor> embeddedEditor;

@@ -120,8 +120,14 @@ TEST_CASE ("more conflicting notes than the limit are counted as overflow", "[vo
     CHECK (s.voiceCount == Schedule::maxVoices);
     CHECK (s.overflowNotes == 3);
 
+    int flagged = 0;
     for (const auto& n : s.notes)
+    {
         CHECK ((n.voice >= 0 && n.voice < Schedule::maxVoices));
+        flagged += n.overflow ? 1 : 0;
+    }
+    // 3 个被迫共用的音符，加上各自声部里原有的那个音符（重叠期间弯音被新音符接管）
+    CHECK (flagged == 6);
 }
 
 TEST_CASE ("each voice gets its own notes and pitch wheel events", "[voices][engine]")

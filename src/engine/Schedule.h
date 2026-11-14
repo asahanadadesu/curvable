@@ -17,6 +17,7 @@ struct ScheduledNote
     int velocity = 100; ///< MIDI 力度 1..127
     PitchCurve curve;   ///< 已 normalise
     int voice = 0;      ///< 分配到的声部（音源实例），见 VoiceAllocator
+    bool overflow = false; ///< 声部不够用，与弯音不同的音符共用了声部（重叠期间弯音会互相影响）
 };
 
 /** 从 Project 编译出的不可变回放数据。在后台/消息线程创建，交给音频线程只读使用。 */

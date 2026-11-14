@@ -203,6 +203,34 @@ int main (int argc, char* argv[])
 
             check (copyPeak > 1.0e-4f, "a copy produces audio on its own (peak " + juce::String (copyPeak, 5) + ")");
 
+            // 空闲暂停：静音 3 秒后副本暂停；新的音符立即唤醒并发声
+            {
+                std::array<juce::MidiBuffer, 3> none;
+                const int idleBlocks = (int) ((HostedInstrument::idleSeconds + 4.0) * testSampleRate / testBlockSize);
+
+                for (int i = 0; i < idleBlocks; ++i)
+                    hosted.process (buffer, none.data(), (int) none.size(), nullptr, false);
+
+                check (hosted.getNumAwakeInstances() == 1,
+                       "idle copies pause (" + juce::String (hosted.getNumAwakeInstances()) + " of 3 running)");
+
+                float wakePeak = 0.0f;
+                for (int i = 0; i < 20; ++i)
+                {
+                    if (i == 0)
+                        none[1].addEvent (juce::MidiMessage::noteOn (1, 67, (juce::uint8) 100), 0);
+
+                    hosted.process (buffer, none.data(), (int) none.size(), nullptr, false);
+                    wakePeak = juce::jmax (wakePeak, buffer.getMagnitude (0, testBlockSize));
+                }
+
+                check (hosted.getNumAwakeInstances() == 2 && wakePeak > 1.0e-4f,
+                       "a note wakes a paused copy (peak " + juce::String (wakePeak, 5) + ")");
+
+                none[1].addEvent (juce::MidiMessage::noteOff (1, 67), 0);
+                hosted.process (buffer, none.data(), (int) none.size(), nullptr, false);
+            }
+
             hosted.syncClones();
             check (true, "copies synced from the main instance");
 

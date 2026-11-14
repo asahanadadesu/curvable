@@ -295,6 +295,9 @@ void HostedInstrument::install (std::unique_ptr<juce::AudioPluginInstance> newIn
         instance = std::move (newInstance);
         oldClones.swap (clones);
         numInstances = instance != nullptr ? 1 : 0;
+
+        for (auto& a : activity)
+            a.reset();
         std::swap (scratch, newScratch);
         lastNonRealtime = false;
 
@@ -397,6 +400,7 @@ void HostedInstrument::createNextClone()
 
                 self->clones.push_back (std::move (created));
                 self->numInstances = 1 + (int) self->clones.size();
+                self->activity[self->clones.size()].reset();
             }
 
             self->sendChangeMessage();
@@ -580,6 +584,40 @@ void HostedInstrument::release()
         c->releaseResources();
 }
 
+bool HostedInstrument::trackMidi (Activity& a, const juce::MidiBuffer& midi) noexcept
+{
+    bool started = false;
+
+    for (const auto metadata : midi)
+    {
+        const auto m = metadata.getMessage();
+
+        if (m.isNoteOn())
+        {
+            a.held.set ((size_t) m.getNoteNumber());
+            started = true;
+        }
+        else if (m.isNoteOff())
+        {
+            a.held.reset ((size_t) m.getNoteNumber());
+        }
+        else if (m.isSustainPedalOn())
+        {
+            a.sustain = true;
+        }
+        else if (m.isSustainPedalOff())
+        {
+            a.sustain = false;
+        }
+        else if (m.isAllNotesOff() || m.isAllSoundOff())
+        {
+            a.held.reset();
+        }
+    }
+
+    return started;
+}
+
 void HostedInstrument::process (juce::AudioBuffer<float>& output, juce::MidiBuffer* midi, int numMidi,
                                 juce::AudioPlayHead* playHead, bool isNonRealtime) noexcept
 {
@@ -603,9 +641,32 @@ void HostedInstrument::process (juce::AudioBuffer<float>& output, juce::MidiBuff
     const auto nonRealtimeChanged = isNonRealtime != lastNonRealtime;
     lastNonRealtime = isNonRealtime;
 
+    const auto blockSeconds = numSamples / juce::jmax (1.0, sampleRate);
+    int awake = 0;
+    bool anyOutput = false; // 是否已有实例写入了 output
+
     for (int i = 0; i < count; ++i)
     {
         auto* plugin = getInstanceUnlocked (i);
+        auto& events = i < numMidi ? midi[i] : spareMidi;
+        auto& state = activity[(size_t) i];
+
+        const auto started = trackMidi (state, events);
+        const bool holding = state.held.any() || state.sustain;
+
+        if (started || holding)
+        {
+            state.silentSeconds = 0.0;
+            state.asleep = false;
+        }
+
+        // 暂停中、这一块也没有任何 MIDI：跳过运算。有 MIDI（弯音、CC 等）时照常交给音源，
+        // 处理完如果仍然静音会立即回到暂停（计时没有清零）
+        if (state.asleep && events.isEmpty())
+            continue;
+
+        state.asleep = false;
+        ++awake;
 
         // 容量足够时不会重新分配内存；宿主给出超过 prepare 时声明的块大小时才会分配
         scratch.setSize (scratchChannelsFor (*plugin), numSamples, false, false, true);
@@ -616,9 +677,21 @@ void HostedInstrument::process (juce::AudioBuffer<float>& output, juce::MidiBuff
         if (nonRealtimeChanged)
             plugin->setNonRealtime (isNonRealtime);
 
-        auto& events = i < numMidi ? midi[i] : spareMidi;
         plugin->processBlock (scratch, events);
         events.clear(); // 音源可能写入了它自己输出的 MIDI
+
+        // 空闲计时：没有按住的音符、输出也静音了，累计够久就暂停（主实例与导出时除外）
+        if (i > 0 && ! isNonRealtime && ! holding && scratch.getMagnitude (0, numSamples) < silenceLevel)
+        {
+            state.silentSeconds += blockSeconds;
+
+            if (state.silentSeconds >= idleSeconds)
+                state.asleep = true;
+        }
+        else
+        {
+            state.silentSeconds = 0.0;
+        }
 
         // 主输出总线的声道位于缓冲区最前面；单声道输出复制到两边。各实例的输出相加
         const auto hostedOutputs = plugin->getMainBusNumOutputChannels();
@@ -627,10 +700,10 @@ void HostedInstrument::process (juce::AudioBuffer<float>& output, juce::MidiBuff
         {
             if (hostedOutputs <= 0)
             {
-                if (i == 0)
+                if (! anyOutput)
                     output.clear (ch, 0, numSamples);
             }
-            else if (i == 0)
+            else if (! anyOutput)
             {
                 output.copyFrom (ch, 0, scratch, juce::jmin (ch, hostedOutputs - 1), 0, numSamples);
             }
@@ -639,8 +712,14 @@ void HostedInstrument::process (juce::AudioBuffer<float>& output, juce::MidiBuff
                 output.addFrom (ch, 0, scratch, juce::jmin (ch, hostedOutputs - 1), 0, numSamples);
             }
         }
+
+        anyOutput = true;
     }
 
+    if (! anyOutput)
+        output.clear();
+
+    numAwake = awake;
     clearMidi();
 }
 

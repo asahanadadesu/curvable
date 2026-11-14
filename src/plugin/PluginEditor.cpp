@@ -26,8 +26,9 @@ namespace
     constexpr int compactBelowWidth = 800;
 
     constexpr auto themeKey = "theme";
+    constexpr auto copiesNoticeKey = "copiesNoticeDismissed";
 
-    enum MenuIds { dayThemeId = 1, nightThemeId, testPhraseId, clearNotesId, pluginManagerId, shortcutsId };
+    enum MenuIds { dayThemeId = 1, nightThemeId, testPhraseId, clearNotesId, pluginManagerId, shortcutsId, syncCopiesId };
 
     /** 插件扫描与管理窗口（JUCE 自带的 PluginListComponent）。 */
     class PluginManagerWindow final : public juce::DocumentWindow
@@ -65,6 +66,22 @@ namespace
     {
         return context.getSettings().getValue (themeKey) == "night" ? Palette::night() : Palette::day();
     }
+}
+
+//==============================================================================
+void CurvableEditor::NoticeCard::paint (juce::Graphics& g)
+{
+    const auto r = getLocalBounds().toFloat().reduced (4.0f);
+    neu::raised (g, r, 14.0f, palette, 4);
+
+    auto textArea = getLocalBounds().reduced (18, 4).withTrimmedRight (100);
+    g.setColour (palette.warm);
+    g.fillEllipse (juce::Rectangle<float> (8.0f, 8.0f).withCentre ({ (float) textArea.getX() + 4.0f, (float) textArea.getCentreY() }));
+    textArea.removeFromLeft (16);
+
+    g.setColour (palette.text);
+    g.setFont (juce::FontOptions (13.0f));
+    g.drawFittedText (text, textArea, juce::Justification::centredLeft, 2, 0.9f);
 }
 
 //==============================================================================
@@ -184,8 +201,20 @@ CurvableEditor::CurvableEditor (CurvableProcessor& p)
     };
     addChildComponent (overlay);
 
+    // 第一次用到多个音源副本时提醒一次：音源自带的混响、延迟会被每个副本各加一遍
+    copiesNotice.text = "Curvable now runs several copies of your synth so notes can bend on their own. "
+                        "Turn off the synth's own reverb and delay and use FL's effects instead, or they will stack up.";
+    copiesNotice.dismissButton.onClick = [this]
+    {
+        context.getSettings().setValue (copiesNoticeKey, true);
+        context.getSettings().saveIfNeeded();
+        updateNotice();
+    };
+    addChildComponent (copiesNotice);
+
     processor.projectChanged.addChangeListener (this);
     hosted.addChangeListener (this);
+    startTimerHz (4);
 
     setResizable (true, true);
     setResizeLimits (defaultMinWidth, defaultMinHeight, 4096, 2160);
@@ -199,6 +228,7 @@ CurvableEditor::CurvableEditor (CurvableProcessor& p)
 
 CurvableEditor::~CurvableEditor()
 {
+    stopTimer();
     processor.projectChanged.removeChangeListener (this);
     hosted.removeChangeListener (this);
     detachEmbeddedEditor();
@@ -269,6 +299,7 @@ void CurvableEditor::resized()
     browser.setBounds (getLocalBounds().withTrimmedTop (toolbarAreaHeight).reduced (page == Page::synth ? 0 : margin, 0)
                            .withTrimmedBottom (page == Page::synth ? 0 : margin));
     overlay.setBounds (getLocalBounds().withTrimmedTop (toolbarAreaHeight));
+    updateNotice();
 
     if (auto* ed = embeddedEditor.getComponent(); ed != nullptr && ed->isVisible())
     {
@@ -482,12 +513,19 @@ void CurvableEditor::refresh()
         if (have < want)
             synthButton.setButtonText (name + "  (" + juce::String (have) + "/" + juce::String (want) + ")");
         else if (have > 1)
-            synthButton.setButtonText (name + juce::String::fromUTF8 ("  ×") + juce::String (have));
+        {
+            // 副本数，括号里是正在运行的（其余因空闲而暂停）
+            const auto awake = hosted.getNumAwakeInstances();
+            shownAwake = awake;
+            synthButton.setButtonText (name + juce::String::fromUTF8 ("  ×") + juce::String (have)
+                                       + (awake < have ? " (" + juce::String (awake) + " on)" : juce::String()));
+        }
         else
             synthButton.setButtonText (name);
 
         synthButton.setTooltip (have > 1 || want > 1
-                                    ? juce::String (have) + " copies of the synth are running so that notes can bend independently."
+                                    ? juce::String (have) + " copies of the synth let notes bend independently. "
+                                      "Idle copies pause to save CPU (\"on\" = currently running)."
                                     : juce::String());
     }
     else if (hosted.isMissing())
@@ -521,7 +559,31 @@ void CurvableEditor::refresh()
 
     refreshModeButtons();
     updateEmbeddedEditor();
+    updateNotice();
     repaint();
+}
+
+void CurvableEditor::updateNotice()
+{
+    const bool show = page == Page::pianoRoll && hosted.isLoaded() && hosted.getNumInstances() > 1
+                      && ! browser.isVisible() && ! context.getSettings().getBoolValue (copiesNoticeKey, false);
+
+    if (show)
+    {
+        const auto body = getBodyArea();
+        const auto width = juce::jmin (680, body.getWidth() - 40);
+        copiesNotice.setBounds (juce::Rectangle<int> (width, 58).withCentre ({ body.getCentreX(), body.getY() + 80 }));
+        copiesNotice.toFront (false);
+    }
+
+    copiesNotice.setVisible (show);
+}
+
+void CurvableEditor::timerCallback()
+{
+    // 运行中的实例数随播放变化，没有 change 消息，定时检查
+    if (hosted.getNumInstances() > 1 && hosted.getNumAwakeInstances() != shownAwake && ! loading)
+        refresh();
 }
 
 void CurvableEditor::refreshModeButtons()
@@ -558,6 +620,7 @@ void CurvableEditor::showSettingsMenu()
     menu.addItem (testPhraseId, "Insert test phrase");
     menu.addItem (clearNotesId, "Clear all notes", ! processor.getProject().notes.empty());
     menu.addSeparator();
+    menu.addItem (syncCopiesId, "Sync synth copies now", hosted.getNumInstances() > 1);
     menu.addItem (pluginManagerId, "Plugin manager...");
     menu.addItem (shortcutsId, "Mouse & keyboard shortcuts (F1)");
 
@@ -596,6 +659,7 @@ void CurvableEditor::showSettingsMenu()
 
             case clearNotesId:    replaceNotes ({}, 0, "Clear all notes"); break;
             case pluginManagerId: self->showPluginManager(); break;
+            case syncCopiesId:    self->hosted.syncClones(); break;
 
             case shortcutsId:
                 self->setPage (Page::pianoRoll);

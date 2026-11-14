@@ -62,6 +62,7 @@ VoiceAllocation allocateVoices (std::vector<ScheduledNote>& notes, int maxVoices
         {
             // 超出上限：放进冲突最少的声部
             ++result.overflowNotes;
+            note.overflow = true;
             auto fewest = std::numeric_limits<std::size_t>::max();
 
             for (int v = 0; v < used; ++v)
@@ -79,6 +80,13 @@ VoiceAllocation allocateVoices (std::vector<ScheduledNote>& notes, int maxVoices
                 }
             }
         }
+
+        // 被迫共用时，同一声部里与它冲突的音符也会受影响：弯音轮跟随最近开始的音符，
+        // 所以先前的音符在重叠期间反而会被带偏。两边都标出来
+        if (note.overflow)
+            for (auto j : live[(std::size_t) chosen])
+                if (occupiedUntil (notes[j], note) > note.start && ! areBendCompatible (notes[j], note))
+                    notes[j].overflow = true;
 
         note.voice = chosen;
         live[(std::size_t) chosen].push_back (i);

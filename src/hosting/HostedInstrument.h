@@ -2,7 +2,9 @@
 
 #include "hosting/HostingContext.h"
 
+#include <array>
 #include <atomic>
+#include <bitset>
 #include <functional>
 
 namespace curvable
@@ -13,7 +15,9 @@ namespace curvable
     第 0 个实例是"主实例"：用户看到和操作的就是它，保存的也是它的状态。其余是副本（clone）：
     - 按 setWantedInstances 在后台逐个创建（异步，不阻塞界面），创建时复制主实例的状态；
     - 主实例的参数变化立即转发给副本；换预设等非参数的变化稍后整体复制一次（也可以手动 syncClones）；
-    - 不再需要时延迟几秒再销毁，避免编辑时反复创建。
+    - 不再需要时延迟几秒再销毁，避免编辑时反复创建；
+    - 空闲时暂停运算：没有按住的音符、输出已静音 idleSeconds 秒的副本不再调用 processBlock，
+      收到新的音符时立即恢复（类似 FL 的 Smart Disable）。主实例始终运行；导出（非实时）时不暂停。
 
     线程约定：
     - load / unload / restoreState / getOrCreateEditor 等：只在消息线程调用。
@@ -92,6 +96,12 @@ public:
 
     /** 已就绪、正在参与发声的实例数（没有加载音源时为 0）。 */
     int getNumInstances() const noexcept       { return numInstances.load(); }
+
+    /** 其中正在运算（没有因空闲而暂停）的实例数。 */
+    int getNumAwakeInstances() const noexcept  { return numAwake.load(); }
+
+    static constexpr double idleSeconds = 3.0;
+    static constexpr float silenceLevel = 1.0e-4f; ///< 约 -80 dB
     double getTailLengthSeconds() const noexcept { return tailSeconds.load(); }
 
     //==============================================================================
@@ -135,6 +145,23 @@ private:
     std::unique_ptr<juce::AudioPluginInstance> instance;
     std::vector<std::unique_ptr<juce::AudioPluginInstance>> clones; ///< 修改时持有 audioLock
     std::atomic<int> numInstances { 0 };
+    std::atomic<int> numAwake { 0 };
+
+    /** 每个实例的活动状态（音频线程）。下标与实例下标相同；实例增删时重置。 */
+    struct Activity
+    {
+        std::bitset<128> held;      ///< 按住的音符（所有 MIDI 通道合并计算）
+        bool sustain = false;       ///< 延音踏板
+        double silentSeconds = 0.0; ///< 没有按住的音符、输出静音的累计时长
+        bool asleep = false;
+
+        void reset() noexcept { held.reset(); sustain = false; silentSeconds = 0.0; asleep = false; }
+    };
+
+    std::array<Activity, maxInstances> activity;
+
+    /** 根据这一块的 MIDI 更新按住的音符；返回这一块是否有新的音符开始。 */
+    static bool trackMidi (Activity&, const juce::MidiBuffer&) noexcept;
     juce::AudioBuffer<float> scratch;
     juce::MidiBuffer spareMidi;
     bool lastNonRealtime = false; // 仅音频线程访问
