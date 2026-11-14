@@ -449,6 +449,39 @@ void HostedInstrument::syncClones()
         c->setStateInformation (state.getData(), (int) state.getSize());
 }
 
+juce::String HostedInstrument::getParameterName (int index) const
+{
+    if (instance == nullptr)
+        return {};
+
+    const auto& params = instance->getParameters();
+    return juce::isPositiveAndBelow (index, params.size()) ? params[index]->getName (64) : juce::String();
+}
+
+bool HostedInstrument::setParameterValue (int index, float value) noexcept
+{
+    const juce::ScopedTryLock sl (audioLock);
+
+    if (! sl.isLocked())
+        return false;
+
+    auto set = [&] (juce::AudioPluginInstance& plugin)
+    {
+        const auto& params = plugin.getParameters();
+
+        if (juce::isPositiveAndBelow (index, params.size()))
+            params[index]->setValue (value);
+    };
+
+    if (instance != nullptr)
+        set (*instance);
+
+    for (auto& c : clones)
+        set (*c);
+
+    return true;
+}
+
 void HostedInstrument::forwardParameter (int index, float value) noexcept
 {
     // 可能在任意线程上（包括主实例的音频回调里）；副本列表只在持有 audioLock 时改变

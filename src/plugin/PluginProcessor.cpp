@@ -41,6 +41,7 @@ CurvableProcessor::CurvableProcessor()
 {
     hostNotes.reserve (maxHostNotesPerBlock);
     hosted.addChangeListener (this);
+    hosted.onUserParameterChange = [this] (int index, float value) { slots.hostedParameterTouched (index, value); };
     setProject (Project {}, false);
 
     // 定期回收音频线程已不再使用的旧 Schedule
@@ -50,6 +51,7 @@ CurvableProcessor::CurvableProcessor()
 CurvableProcessor::~CurvableProcessor()
 {
     stopTimer();
+    hosted.onUserParameterChange = nullptr;
     hosted.removeChangeListener (this);
 }
 
@@ -176,7 +178,8 @@ void CurvableProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mi
 
     routeEvents (sketchEvents);
 
-    // 5. 交给音源发声（各实例的输出相加）
+    // 5. 宿主对参数槽的自动化 → 音源参数；然后交给音源发声（各实例的输出相加）
+    slots.applyToHosted();
     hosted.process (buffer, voiceMidi.data(), (int) voiceMidi.size(), getPlayHead(), isNonRealtime());
 }
 
@@ -270,6 +273,8 @@ void CurvableProcessor::getStateInformation (juce::MemoryBlock& destData)
     if (auto hostedState = hosted.saveState(); hostedState.isValid())
         state.appendChild (hostedState, nullptr);
 
+    state.appendChild (slots.save(), nullptr);
+
     if (auto xml = state.createXml())
         copyXmlToBinary (*xml, destData);
 }
@@ -294,6 +299,7 @@ void CurvableProcessor::setStateInformation (const void* data, int sizeInBytes)
     else
         setProject (Project {}, false);
 
+    slots.restore (state.getChildWithName (AutomationSlots::stateType));
     hosted.restoreState (state.getChildWithName (HostedInstrument::stateType));
 }
 
@@ -308,6 +314,8 @@ void CurvableProcessor::changeListenerCallback (juce::ChangeBroadcaster*)
 void CurvableProcessor::timerCallback()
 {
     scheduleExchange.collectGarbage();
+    if (slots.update())
+        stateChanged = true;
 
     // 按工程需要的声部数准备音源实例（创建在后台进行）
     hosted.setWantedInstances (wantedVoices.load());

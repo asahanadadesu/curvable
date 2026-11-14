@@ -85,6 +85,8 @@ set(CURVABLE_JUCE_DEFINITIONS
 target_sources(Curvable PRIVATE
     src/plugin/PluginProcessor.cpp
     src/plugin/PluginEditor.cpp
+    src/plugin/AutomationSlots.cpp
+    src/ui/SlotsPanel.cpp
     src/ui/SynthBrowser.cpp
     src/ui/Theme.cpp
     src/ui/CurvableLookAndFeel.cpp

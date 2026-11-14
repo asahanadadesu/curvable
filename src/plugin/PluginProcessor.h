@@ -4,6 +4,7 @@
 #include "engine/ScheduleExchange.h"
 #include "hosting/HostedInstrument.h"
 #include "hosting/HostingContext.h"
+#include "plugin/AutomationSlots.h"
 #include "model/Project.h"
 
 #include <juce_audio_processors/juce_audio_processors.h>
@@ -45,6 +46,7 @@ public:
 
     HostingContext& getHostingContext() noexcept { return *hostingContext; }
     HostedInstrument& getHostedInstrument() noexcept { return hosted; }
+    AutomationSlots& getAutomationSlots() noexcept { return slots; }
 
     //==============================================================================
     // 编辑内容（消息线程）
@@ -79,6 +81,7 @@ private:
 
     juce::SharedResourcePointer<HostingContext> hostingContext;
     HostedInstrument hosted { *hostingContext };
+    AutomationSlots slots { *this, hosted };
 
     mutable juce::CriticalSection projectLock; ///< 宿主可能在其他线程保存/恢复状态
     Project project;

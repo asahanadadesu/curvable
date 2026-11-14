@@ -77,6 +77,15 @@ public:
     /** 把主实例的完整状态复制给所有副本。 */
     void syncClones();
 
+    /** 主实例第 index 个参数的名字（消息线程）。 */
+    juce::String getParameterName (int index) const;
+
+    /** 设置所有实例的第 index 个参数（0..1）。不阻塞：正在切换音源时返回 false，调用方下次再试。任意线程。 */
+    bool setParameterValue (int index, float value) noexcept;
+
+    /** 用户在音源界面里动了参数（index, value）。可能在任意线程上调用；刚加载后的一小段时间内不会调用。 */
+    std::function<void (int, float)> onUserParameterChange;
+
     static constexpr int maxInstances = 16;
 
     /** 自上次调用以来，用户是否改动过音源（调参数、换预设等）。任意线程可调用。
@@ -197,6 +206,9 @@ private:
         {
             owner.forwardParameter (index, value);
             owner.noteUserChange();
+
+            if (owner.onUserParameterChange && juce::Time::getMillisecondCounter() >= owner.ignoreChangesUntil.load())
+                owner.onUserParameterChange (index, value);
         }
 
         void audioProcessorChanged (juce::AudioProcessor*, const ChangeDetails& details) override

@@ -85,6 +85,50 @@ void CurvableEditor::NoticeCard::paint (juce::Graphics& g)
 }
 
 //==============================================================================
+void CurvableEditor::SlotsHandle::paintButton (juce::Graphics& g, bool isHighlighted, bool isDown)
+{
+    g.fillAll (palette.bg);
+    g.setColour (palette.lineStrong);
+    g.fillRect (0, 0, 1, getHeight());
+
+    const auto r = getLocalBounds().toFloat().reduced (4.0f, 8.0f);
+
+    if (isDown)
+        neu::inset (g, r, 10.0f, palette, 2);
+    else
+        neu::raised (g, r, 10.0f, palette, 2);
+
+    // 有绑定时点亮一个圆点
+    bool anyBound = false;
+    for (int i = 0; i < AutomationSlots::numSlots; ++i)
+        anyBound = anyBound || slots.getBinding (i) >= 0;
+
+    const auto centre = r.getCentre();
+
+    // 竖排文字，旁边一个向左的箭头（表示可以展开）
+    g.saveState();
+    g.addTransform (juce::AffineTransform::rotation (-juce::MathConstants<float>::halfPi, centre.x, centre.y));
+    g.setColour (isHighlighted ? palette.text : palette.muted);
+    g.setFont (juce::FontOptions (12.0f, juce::Font::bold));
+    g.drawFittedText ("AUTOMATION", juce::Rectangle<float> (juce::jmax (40.0f, r.getHeight() - 60.0f), 18.0f).withCentre (centre).toNearestInt(),
+                      juce::Justification::centred, 1, 0.7f);
+    g.restoreState();
+
+    juce::Path chevron;
+    const auto top = juce::Point<float> (centre.x, r.getY() + 16.0f);
+    chevron.startNewSubPath (top.x + 2.5f, top.y - 4.0f);
+    chevron.lineTo (top.x - 2.0f, top.y);
+    chevron.lineTo (top.x + 2.5f, top.y + 4.0f);
+    g.strokePath (chevron, juce::PathStrokeType (1.6f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+
+    if (anyBound)
+    {
+        g.setColour (palette.accent);
+        g.fillEllipse (juce::Rectangle<float> (6.0f, 6.0f).withCentre ({ centre.x, r.getBottom() - 16.0f }));
+    }
+}
+
+//==============================================================================
 void CurvableEditor::GearButton::paintButton (juce::Graphics& g, bool isHighlighted, bool isDown)
 {
     const auto r = getLocalBounds().toFloat().reduced (4.0f);
@@ -212,6 +256,15 @@ CurvableEditor::CurvableEditor (CurvableProcessor& p)
     };
     addChildComponent (copiesNotice);
 
+    slotsPanel.onClose = [this] { setSlotsOpen (false); };
+    addChildComponent (slotsPanel);
+
+    slotsHandle.setTooltip ("Automation slots: let FL automate knobs of the synth");
+    slotsHandle.setWantsKeyboardFocus (false);
+    slotsHandle.onClick = [this] { setSlotsOpen (true); };
+    addChildComponent (slotsHandle);
+    processor.getAutomationSlots().changed.addChangeListener (this);
+
     processor.projectChanged.addChangeListener (this);
     hosted.addChangeListener (this);
     startTimerHz (4);
@@ -231,6 +284,7 @@ CurvableEditor::~CurvableEditor()
     stopTimer();
     processor.projectChanged.removeChangeListener (this);
     hosted.removeChangeListener (this);
+    processor.getAutomationSlots().changed.removeChangeListener (this);
     detachEmbeddedEditor();
 
     // 窗口关闭时销毁音源界面，下次打开再重建（插件的原生子窗口不能比我们的窗口活得更久）
@@ -250,7 +304,7 @@ juce::Rectangle<int> CurvableEditor::getBodyArea() const
 
     // Synth 页：音源界面紧贴工具栏下方、左右不留边；卷帘页：四周留出边距
     if (page == Page::synth)
-        return area;
+        return area.withTrimmedRight (getSlotsWidth());
 
     return area.withTrimmedTop (bodyGap).reduced (margin, 0).withTrimmedBottom (margin);
 }
@@ -299,6 +353,8 @@ void CurvableEditor::resized()
     browser.setBounds (getLocalBounds().withTrimmedTop (toolbarAreaHeight).reduced (page == Page::synth ? 0 : margin, 0)
                            .withTrimmedBottom (page == Page::synth ? 0 : margin));
     overlay.setBounds (getLocalBounds().withTrimmedTop (toolbarAreaHeight));
+    slotsPanel.setBounds (getLocalBounds().withTrimmedTop (toolbarAreaHeight).removeFromRight (getSlotsWidth()));
+    slotsHandle.setBounds (slotsPanel.getBounds());
     updateNotice();
 
     if (auto* ed = embeddedEditor.getComponent(); ed != nullptr && ed->isVisible())
@@ -384,6 +440,8 @@ void CurvableEditor::updateEmbeddedEditor()
                              && ! browser.isVisible() && ! dragHighlight;
 
     pianoRoll.setVisible (page == Page::pianoRoll);
+    slotsPanel.setVisible (page == Page::synth && slotsOpen && ! browser.isVisible());
+    slotsHandle.setVisible (page == Page::synth && ! slotsOpen && ! browser.isVisible());
 
     if (! wantVisible)
     {
@@ -427,7 +485,7 @@ void CurvableEditor::fitWindowToSynth (juce::AudioProcessorEditor& ed)
         synthLayoutActive = true;
     }
 
-    const auto width  = juce::jmax (synthPageMinWidth, ed.getWidth());
+    const auto width  = juce::jmax (synthPageMinWidth, ed.getWidth() + getSlotsWidth());
     const auto height = juce::jmax (synthPageMinHeight, ed.getHeight() + toolbarAreaHeight);
 
     if (ed.isResizable())
@@ -437,7 +495,7 @@ void CurvableEditor::fitWindowToSynth (juce::AudioProcessorEditor& ed)
 
         if (auto* synthConstrainer = ed.getConstrainer())
         {
-            minW = juce::jmax (minW, synthConstrainer->getMinimumWidth());
+            minW = juce::jmax (minW, synthConstrainer->getMinimumWidth() + getSlotsWidth());
             minH = juce::jmax (minH, synthConstrainer->getMinimumHeight() + toolbarAreaHeight);
         }
 
@@ -494,8 +552,14 @@ void CurvableEditor::componentBeingDeleted (juce::Component& comp)
 }
 
 //==============================================================================
-void CurvableEditor::changeListenerCallback (juce::ChangeBroadcaster*)
+void CurvableEditor::changeListenerCallback (juce::ChangeBroadcaster* source)
 {
+    if (source == &processor.getAutomationSlots().changed)
+    {
+        slotsHandle.repaint(); // 绑定的圆点
+        return;
+    }
+
     refresh();
 }
 
@@ -563,6 +627,25 @@ void CurvableEditor::refresh()
     repaint();
 }
 
+void CurvableEditor::setSlotsOpen (bool shouldBeOpen)
+{
+    slotsOpen = shouldBeOpen;
+
+    if (slotsOpen && page != Page::synth)
+    {
+        setPage (Page::synth); // 会重新布局
+        return;
+    }
+
+    if (! slotsOpen)
+        processor.getAutomationSlots().cancelLearn();
+
+    // 窗口宽度随面板变化；没有嵌入音源界面时只需重新布局
+    updateEmbeddedEditor();
+    resized();
+    repaint();
+}
+
 void CurvableEditor::updateNotice()
 {
     const bool show = page == Page::pianoRoll && hosted.isLoaded() && hosted.getNumInstances() > 1
@@ -606,6 +689,7 @@ void CurvableEditor::applyTheme (bool dark)
 
     rebuildChrome();
     pianoRoll.paletteChanged();
+    slotsPanel.paletteChanged();
     sendLookAndFeelChange();
     repaint();
 }
@@ -706,13 +790,18 @@ void CurvableEditor::loadDescription (const juce::PluginDescription& desc)
     refresh();
 
     juce::Component::SafePointer<CurvableEditor> safeThis (this);
+    const auto previousPlugin = hosted.getPluginName() + "|" + hosted.getLoadedIdentifier();
 
-    hosted.load (desc, [safeThis] (const juce::String& error)
+    hosted.load (desc, [safeThis, previousPlugin] (const juce::String& error)
     {
         if (auto* editor = safeThis.getComponent())
         {
             if (error.isEmpty())
             {
+                // 换成了别的音源：旧的参数绑定没有意义了
+                if (previousPlugin != editor->hosted.getPluginName() + "|" + editor->hosted.getLoadedIdentifier())
+                    editor->processor.getAutomationSlots().clearAll();
+
                 if (const auto loaded = editor->hosted.getLoadedDescription())
                     editor->context.markRecentlyUsed (*loaded);
 

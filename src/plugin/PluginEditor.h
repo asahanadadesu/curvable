@@ -3,6 +3,7 @@
 #include "plugin/PluginProcessor.h"
 #include "ui/CurvableLookAndFeel.h"
 #include "ui/PianoRoll.h"
+#include "ui/SlotsPanel.h"
 #include "ui/SynthBrowser.h"
 
 namespace curvable
@@ -53,6 +54,15 @@ private:
         const Palette& palette;
         juce::String text;
         juce::TextButton dismissButton { "Got it" };
+    };
+
+    /** Synth 页右边缘的竖向把手：单击展开参数槽面板。 */
+    struct SlotsHandle final : public juce::Button
+    {
+        SlotsHandle (const Palette& p, AutomationSlots& s) : juce::Button ("Automation slots"), palette (p), slots (s) {}
+        void paintButton (juce::Graphics&, bool isHighlighted, bool isDown) override;
+        const Palette& palette;
+        AutomationSlots& slots;
     };
 
     /** 圆形图标按钮（设置）。 */
@@ -111,6 +121,18 @@ private:
     PianoRoll pianoRoll { processor, palette };
     SynthBrowser browser;
     Overlay overlay;
+    SlotsPanel slotsPanel { processor.getAutomationSlots(), hosted, palette };
+    SlotsHandle slotsHandle { palette, processor.getAutomationSlots() };
+    bool slotsOpen = false;
+
+    static constexpr int slotsHandleWidth = 30;
+
+    /** Synth 页右侧参数槽面板（展开时）或把手（收起时）占用的宽度；卷帘页为 0。 */
+    int getSlotsWidth() const noexcept
+    {
+        return page == Page::synth ? (slotsOpen ? SlotsPanel::preferredWidth : slotsHandleWidth) : 0;
+    }
+    void setSlotsOpen (bool);
     NoticeCard copiesNotice { palette };
 
     juce::Rectangle<int> logoBounds, tabsBounds, modesBounds;
