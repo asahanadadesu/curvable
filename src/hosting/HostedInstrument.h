@@ -11,7 +11,7 @@ namespace curvable
 /** 在 Curvable 内部托管一个音源插件。
 
     线程约定：
-    - load / unload / restoreState / showEditor 等：只在消息线程调用。
+    - load / unload / restoreState / getOrCreateEditor 等：只在消息线程调用。
     - prepare / release：由宿主在 prepareToPlay / releaseResources 中调用。
     - process：音频线程。不会阻塞；正在切换插件时输出静音。
 
@@ -47,9 +47,15 @@ public:
 
     std::optional<juce::PluginDescription> getLoadedDescription() const;
 
-    void showEditor();
-    void closeEditor();
-    bool isEditorShowing() const noexcept { return editorWindow != nullptr; }
+    /** 音源自己的界面，由 HostedInstrument 持有，调用方把它作为子组件嵌入即可。
+        切换或卸载音源时会先销毁旧界面（随后发送 change 消息），调用方不要保存这个指针。
+        没有加载音源时返回 nullptr。 */
+    juce::AudioProcessorEditor* getOrCreateEditor();
+
+    /** 销毁音源界面。嵌入它的窗口关闭前必须调用：插件的原生子窗口不能比父窗口活得更久。 */
+    void releaseEditor();
+
+    juce::AudioProcessorEditor* getEditor() const noexcept { return editor.get(); }
 
     /** 保存为 ValueTree（类型为 "HostedPlugin"）；没有音源时返回无效的 ValueTree。 */
     juce::ValueTree saveState() const;
@@ -101,7 +107,7 @@ private:
     juce::String lastError;
     int loadGeneration = 0; ///< 让过时的异步加载结果作废
 
-    std::unique_ptr<juce::DocumentWindow> editorWindow;
+    std::unique_ptr<juce::AudioProcessorEditor> editor;
 
     JUCE_DECLARE_WEAK_REFERENCEABLE (HostedInstrument)
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (HostedInstrument)

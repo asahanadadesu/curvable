@@ -227,12 +227,14 @@ juce::File HostingContext::resolveDroppedFile (const juce::File& file) const
     {
         const auto text = current.withFileExtension (".nfo").loadFileAsString().toStdString();
 
+        // 一个条目可能同时记录了 VST2 和 VST3 文件（例如 Serum），只取能托管的格式
         for (const auto& record : parseFLNfo (text))
         {
             const auto path = juce::String::fromUTF8 (record.filename.c_str());
 
             if (juce::File::isAbsolutePath (path))
-                if (const auto bundle = findOutermostBundle (juce::File (path)); bundle.exists())
+                if (const auto bundle = findOutermostBundle (juce::File (path));
+                    bundle.exists() && bundle.hasFileExtension (".vst3;.component"))
                     return bundle;
         }
 

@@ -7,34 +7,6 @@ namespace
 {
     constexpr auto descriptionType = "PLUGIN";
     constexpr auto stateProperty   = "state";
-
-    /** 显示被托管音源自己界面的独立窗口。 */
-    class HostedEditorWindow final : public juce::DocumentWindow
-    {
-    public:
-        HostedEditorWindow (const juce::String& title, juce::AudioProcessorEditor* editor,
-                            std::function<void()> onCloseRequested)
-            : DocumentWindow (title, juce::Colours::black, DocumentWindow::closeButton),
-              onClose (std::move (onCloseRequested))
-        {
-            setUsingNativeTitleBar (true);
-            setContentOwned (editor, true);
-            setResizable (editor->isResizable(), false);
-            // 插件子窗口不置顶的话，点一下宿主窗口就会被盖住
-            setAlwaysOnTop (true);
-            centreWithSize (getWidth(), getHeight());
-            setVisible (true);
-        }
-
-        void closeButtonPressed() override
-        {
-            if (onClose)
-                onClose();
-        }
-
-    private:
-        std::function<void()> onClose;
-    };
 }
 
 //==============================================================================
@@ -45,7 +17,7 @@ HostedInstrument::HostedInstrument (HostingContext& ctx)
 
 HostedInstrument::~HostedInstrument()
 {
-    closeEditor();
+    releaseEditor();
 
     std::unique_ptr<juce::AudioPluginInstance> old;
     {
@@ -132,49 +104,33 @@ std::optional<juce::PluginDescription> HostedInstrument::getLoadedDescription() 
 }
 
 //==============================================================================
-void HostedInstrument::showEditor()
+juce::AudioProcessorEditor* HostedInstrument::getOrCreateEditor()
 {
     JUCE_ASSERT_MESSAGE_THREAD
 
-    if (editorWindow != nullptr)
-    {
-        editorWindow->toFront (true);
-        return;
-    }
+    if (editor != nullptr || instance == nullptr)
+        return editor.get();
 
-    if (instance == nullptr)
-        return;
+    editor.reset (instance->createEditorAndMakeActive());
 
-    auto* editor = instance->createEditorAndMakeActive();
-
+    // 没有自带界面的插件：用 JUCE 的通用参数界面代替
     if (editor == nullptr)
-        editor = new juce::GenericAudioProcessorEditor (*instance);
+        editor = std::make_unique<juce::GenericAudioProcessorEditor> (*instance);
 
-    juce::WeakReference<HostedInstrument> weakThis (this);
-    editorWindow = std::make_unique<HostedEditorWindow> (
-        instance->getName() + " - Curvable", editor,
-        [weakThis]
-        {
-            // 窗口不能在自己的回调里同步销毁，延后到下一次消息循环
-            juce::MessageManager::callAsync ([weakThis]
-            {
-                if (auto* self = weakThis.get())
-                    self->closeEditor();
-            });
-        });
-
-    sendChangeMessage();
+    return editor.get();
 }
 
-void HostedInstrument::closeEditor()
+void HostedInstrument::releaseEditor()
 {
     JUCE_ASSERT_MESSAGE_THREAD
 
-    if (editorWindow == nullptr)
+    if (editor == nullptr)
         return;
 
-    editorWindow = nullptr; // 窗口持有编辑器，编辑器必须先于插件实例销毁
-    sendChangeMessage();
+    if (instance != nullptr)
+        instance->editorBeingDeleted (editor.get());
+
+    editor = nullptr; // 编辑器必须先于插件实例销毁
 }
 
 //==============================================================================
@@ -269,7 +225,7 @@ void HostedInstrument::install (std::unique_ptr<juce::AudioPluginInstance> newIn
 {
     JUCE_ASSERT_MESSAGE_THREAD
 
-    closeEditor();
+    releaseEditor();
 
     juce::AudioBuffer<float> newScratch;
     double preparedRate = 0.0;

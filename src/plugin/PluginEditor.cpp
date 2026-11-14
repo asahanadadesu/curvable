@@ -11,6 +11,14 @@ namespace
     const auto errorColour      = juce::Colour (0xffe0796b);
 
     constexpr int toolbarHeight = 44;
+    constexpr int tabRadioGroup = 1001;
+
+    constexpr int defaultMinWidth  = 640;
+    constexpr int defaultMinHeight = 400;
+
+    // Synth 页的最小尺寸：工具栏要放得下；音源界面比这小时两侧留黑边
+    constexpr int synthPageMinWidth  = 560;
+    constexpr int synthPageMinHeight = 300;
 
     /** 插件扫描与管理窗口（JUCE 自带的 PluginListComponent）。 */
     class PluginManagerWindow final : public juce::DocumentWindow
@@ -52,11 +60,20 @@ CurvableEditor::CurvableEditor (CurvableProcessor& p)
       hosted (p.getHostedInstrument()),
       context (p.getHostingContext())
 {
-    synthButton.onClick  = [this] { browser.isVisible() ? hideSynthBrowser() : showSynthBrowser(); };
-    editorButton.onClick = [this] { hosted.isEditorShowing() ? hosted.closeEditor() : hosted.showEditor(); };
-
+    synthButton.onClick = [this] { browser.isVisible() ? hideSynthBrowser() : showSynthBrowser(); };
     addAndMakeVisible (synthButton);
-    addAndMakeVisible (editorButton);
+
+    for (auto* tab : { &pianoRollTab, &synthTab })
+    {
+        tab->setClickingTogglesState (true);
+        tab->setRadioGroupId (tabRadioGroup);
+        tab->setColour (juce::TextButton::buttonOnColourId, accentColour.withAlpha (0.25f));
+        addAndMakeVisible (tab);
+    }
+
+    pianoRollTab.setToggleState (true, juce::dontSendNotification);
+    pianoRollTab.onClick = [this] { if (pianoRollTab.getToggleState()) setPage (Page::pianoRoll); };
+    synthTab.onClick     = [this] { if (synthTab.getToggleState())     setPage (Page::synth); };
 
     browser.onChoose = [this] (const SynthEntry& entry)
     {
@@ -77,13 +94,21 @@ CurvableEditor::CurvableEditor (CurvableProcessor& p)
     refresh();
 
     setResizable (true, true);
-    setResizeLimits (640, 400, 4096, 2160);
+    setResizeLimits (defaultMinWidth, defaultMinHeight, 4096, 2160);
     setSize (1000, 620);
+
+    // 已经加载了音源时，打开窗口直接显示音源页
+    if (hosted.isLoaded())
+        setPage (Page::synth);
 }
 
 CurvableEditor::~CurvableEditor()
 {
     hosted.removeChangeListener (this);
+    detachEmbeddedEditor();
+
+    // 窗口关闭时销毁音源界面，下次打开再重建（插件的原生子窗口不能比我们的窗口活得更久）
+    hosted.releaseEditor();
 }
 
 //==============================================================================
@@ -101,13 +126,23 @@ void CurvableEditor::paint (juce::Graphics& g)
     g.setFont (juce::FontOptions (20.0f, juce::Font::bold));
     g.drawText ("Curvable", toolbar.removeFromLeft (130).withTrimmedLeft (16), juce::Justification::centredLeft);
 
-    // 主体区域：M1 阶段只显示状态，后续替换为卷帘编辑器
-    auto body = bounds.reduced (24);
+    // 主体区域：Synth 页显示音源界面；卷帘页目前只显示状态，M3 替换为卷帘编辑器
+    const bool showingSynth = embeddedEditor != nullptr && embeddedEditor->isVisible();
 
-    g.setColour (statusIsError ? errorColour : juce::Colours::white.withAlpha (0.75f));
-    g.setFont (juce::FontOptions (16.0f));
-    g.drawFittedText (statusText, body.removeFromTop (body.getHeight() / 2).withTrimmedTop (body.getHeight() / 3),
-                      juce::Justification::centred, 3);
+    if (showingSynth)
+    {
+        g.setColour (juce::Colours::black);
+        g.fillRect (getBodyArea());
+    }
+    else
+    {
+        auto body = bounds.reduced (24);
+
+        g.setColour (statusIsError ? errorColour : juce::Colours::white.withAlpha (0.75f));
+        g.setFont (juce::FontOptions (16.0f));
+        g.drawFittedText (statusText, body.removeFromTop (body.getHeight() / 2).withTrimmedTop (body.getHeight() / 3),
+                          juce::Justification::centred, 3);
+    }
 
     if (dragHighlight)
     {
@@ -120,10 +155,18 @@ void CurvableEditor::paint (juce::Graphics& g)
         g.drawText ("Drop to load this synth", dropArea, juce::Justification::centred);
     }
 
-    g.setColour (juce::Colours::white.withAlpha (0.35f));
-    g.setFont (juce::FontOptions (13.0f));
-    g.drawText ("v" CURVABLE_VERSION_STRING " - M1 pass-through mode", getLocalBounds().removeFromBottom (28).withTrimmedRight (12),
-                juce::Justification::centredRight);
+    if (! showingSynth)
+    {
+        g.setColour (juce::Colours::white.withAlpha (0.35f));
+        g.setFont (juce::FontOptions (13.0f));
+        g.drawText ("v" CURVABLE_VERSION_STRING " - M1 pass-through mode", getLocalBounds().removeFromBottom (28).withTrimmedRight (12),
+                    juce::Justification::centredRight);
+    }
+}
+
+juce::Rectangle<int> CurvableEditor::getBodyArea() const
+{
+    return getLocalBounds().withTrimmedTop (toolbarHeight);
 }
 
 void CurvableEditor::resized()
@@ -131,11 +174,148 @@ void CurvableEditor::resized()
     auto toolbar = getLocalBounds().removeFromTop (toolbarHeight).reduced (8, 7);
     toolbar.removeFromLeft (130);
 
-    synthButton.setBounds (toolbar.removeFromLeft (260));
-    toolbar.removeFromLeft (8);
-    editorButton.setBounds (toolbar.removeFromLeft (110));
+    pianoRollTab.setBounds (toolbar.removeFromLeft (100));
+    toolbar.removeFromLeft (4);
+    synthTab.setBounds (toolbar.removeFromLeft (80));
 
-    browser.setBounds (getLocalBounds().withTrimmedTop (toolbarHeight));
+    synthButton.setBounds (toolbar.removeFromRight (juce::jmin (280, toolbar.getWidth() / 2)));
+
+    browser.setBounds (getBodyArea());
+
+    if (auto* ed = embeddedEditor.getComponent(); ed != nullptr && ed->isVisible())
+    {
+        const juce::ScopedValueSetter<bool> svs (layingOut, true);
+
+        // 可调整大小的音源界面填满主体区域；其余的保持自身大小并居中
+        if (ed->isResizable())
+            ed->setBounds (getBodyArea());
+
+        ed->setTopLeftPosition (getBodyArea().getCentre() - ed->getLocalBounds().getCentre());
+    }
+}
+
+//==============================================================================
+void CurvableEditor::setPage (Page newPage)
+{
+    page = newPage;
+    pianoRollTab.setToggleState (page == Page::pianoRoll, juce::dontSendNotification);
+    synthTab.setToggleState (page == Page::synth, juce::dontSendNotification);
+    updateEmbeddedEditor();
+    repaint();
+}
+
+void CurvableEditor::updateEmbeddedEditor()
+{
+    // 嵌入的音源界面是原生子窗口，会盖住 JUCE 绘制的浮层，所以浏览面板或拖拽提示出现时要隐藏它
+    const bool wantVisible = page == Page::synth && hosted.isLoaded() && ! loading
+                             && ! browser.isVisible() && ! dragHighlight;
+
+    if (! wantVisible)
+    {
+        if (embeddedEditor != nullptr)
+            embeddedEditor->setVisible (false);
+
+        // 仍在 Synth 页（例如打开了浏览面板）时保持窗口大小，避免跳动
+        if (page != Page::synth || ! hosted.isLoaded())
+            leaveSynthLayout();
+
+        return;
+    }
+
+    auto* ed = hosted.getOrCreateEditor();
+
+    if (ed != embeddedEditor.getComponent())
+    {
+        detachEmbeddedEditor();
+        embeddedEditor = ed;
+
+        if (ed != nullptr)
+        {
+            addChildComponent (ed);
+            ed->addComponentListener (this);
+        }
+    }
+
+    if (ed == nullptr)
+        return;
+
+    ed->setVisible (true);
+    fitWindowToSynth (*ed);
+    resized();
+}
+
+void CurvableEditor::fitWindowToSynth (juce::AudioProcessorEditor& ed)
+{
+    if (! synthLayoutActive)
+    {
+        pianoRollSize = { getWidth(), getHeight() };
+        synthLayoutActive = true;
+    }
+
+    const auto width  = juce::jmax (synthPageMinWidth, ed.getWidth());
+    const auto height = juce::jmax (synthPageMinHeight, ed.getHeight() + toolbarHeight);
+
+    if (ed.isResizable())
+    {
+        // 音源界面可调整大小：窗口也可以拖动，音源界面跟随填满
+        auto minW = synthPageMinWidth, minH = synthPageMinHeight;
+
+        if (auto* synthConstrainer = ed.getConstrainer())
+        {
+            minW = juce::jmax (minW, synthConstrainer->getMinimumWidth());
+            minH = juce::jmax (minH, synthConstrainer->getMinimumHeight() + toolbarHeight);
+        }
+
+        setResizeLimits (minW, minH, 8192, 8192);
+    }
+    else
+    {
+        // 固定大小的音源界面：窗口锁定为刚好装下它
+        setResizeLimits (width, height, width, height);
+    }
+
+    if (getWidth() != width || getHeight() != height)
+        setSize (width, height);
+}
+
+void CurvableEditor::leaveSynthLayout()
+{
+    if (! synthLayoutActive)
+        return;
+
+    synthLayoutActive = false;
+    setResizeLimits (defaultMinWidth, defaultMinHeight, 4096, 2160);
+
+    if (page == Page::pianoRoll)
+        setSize (pianoRollSize.x, pianoRollSize.y);
+}
+
+void CurvableEditor::detachEmbeddedEditor()
+{
+    if (auto* ed = embeddedEditor.getComponent())
+    {
+        ed->removeComponentListener (this);
+        removeChildComponent (ed);
+    }
+
+    embeddedEditor = nullptr;
+}
+
+void CurvableEditor::componentMovedOrResized (juce::Component& comp, bool, bool wasResized)
+{
+    // 音源自己改变了界面大小（例如切换界面缩放），让窗口重新贴合；由我们引起的变化忽略
+    if (wasResized && ! layingOut && &comp == embeddedEditor.getComponent())
+        updateEmbeddedEditor();
+}
+
+void CurvableEditor::componentBeingDeleted (juce::Component& comp)
+{
+    // HostedInstrument 切换或卸载音源时会删除旧界面
+    if (&comp == embeddedEditor.getComponent())
+    {
+        comp.removeComponentListener (this);
+        embeddedEditor = nullptr;
+    }
 }
 
 //==============================================================================
@@ -160,8 +340,7 @@ void CurvableEditor::refresh()
     synthButton.setColour (juce::TextButton::textColourOffId,
                            hosted.isMissing() ? errorColour : (hosted.isLoaded() ? accentColour : juce::Colours::white));
 
-    editorButton.setEnabled (hosted.isLoaded());
-    editorButton.setButtonText (hosted.isEditorShowing() ? "Hide synth" : "Show synth");
+    synthTab.setButtonText (hosted.isMissing() ? "Synth (!)" : "Synth");
 
     statusIsError = message.isNotEmpty() ? messageIsError : hosted.getLastError().isNotEmpty();
 
@@ -172,10 +351,14 @@ void CurvableEditor::refresh()
     else if (loading)
         statusText = "Loading synth...";
     else if (hosted.isLoaded())
-        statusText = "Play notes from the host's piano roll - they are passed straight to " + name + ".";
+        statusText = page == Page::pianoRoll
+                         ? "Play notes from the host's piano roll - they are passed straight to " + name + ".\n"
+                           "Curvable's own piano roll will live here."
+                         : name + " is loaded.";
     else
         statusText = "Click \"Load synth\" to pick one of your synths, or drag a plugin here.";
 
+    updateEmbeddedEditor();
     repaint();
 }
 
@@ -193,11 +376,16 @@ void CurvableEditor::showSynthBrowser()
     browser.setVisible (true);
     browser.toFront (false);
     browser.focusSearch();
+    updateEmbeddedEditor();
 }
 
 void CurvableEditor::hideSynthBrowser()
 {
+    if (! browser.isVisible())
+        return;
+
     browser.setVisible (false);
+    updateEmbeddedEditor();
 }
 
 void CurvableEditor::loadDescription (const juce::PluginDescription& desc)
@@ -217,6 +405,12 @@ void CurvableEditor::loadDescription (const juce::PluginDescription& desc)
                     editor->context.markRecentlyUsed (*loaded);
 
             editor->loading = false;
+
+            // 加载成功后直接显示音源界面，方便马上调音色
+            if (error.isEmpty())
+                editor->page = Page::synth;
+
+            editor->setPage (editor->page);
             editor->refresh();
         }
     });
@@ -243,18 +437,21 @@ void CurvableEditor::fileDragEnter (const juce::StringArray&, int, int)
 {
     hideSynthBrowser();
     dragHighlight = true;
+    updateEmbeddedEditor();
     repaint();
 }
 
 void CurvableEditor::fileDragExit (const juce::StringArray&)
 {
     dragHighlight = false;
+    updateEmbeddedEditor();
     repaint();
 }
 
 void CurvableEditor::filesDropped (const juce::StringArray& files, int, int)
 {
     dragHighlight = false;
+    updateEmbeddedEditor();
     repaint();
 
     hideSynthBrowser();

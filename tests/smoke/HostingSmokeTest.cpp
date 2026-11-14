@@ -153,6 +153,30 @@ int main (int argc, char* argv[])
         const auto peak = playNoteAndMeasure (hosted);
         check (peak > 1.0e-4f, "note produces audio (peak " + juce::String (peak, 5) + ")");
 
+        // 音源界面：可以嵌入到一个父组件里，再干净地销毁；重复创建也可以
+        {
+            juce::Component parent;
+            parent.setSize (2000, 1500);
+            parent.addToDesktop (0);
+
+            auto* ed = hosted.getOrCreateEditor();
+            check (ed != nullptr && ed->getWidth() > 0 && ed->getHeight() > 0,
+                   "synth editor created (" + (ed != nullptr ? juce::String (ed->getWidth()) + "x" + juce::String (ed->getHeight()) : juce::String ("null")) + ")");
+
+            if (ed != nullptr)
+            {
+                parent.addAndMakeVisible (ed);
+                juce::MessageManager::getInstance()->runDispatchLoopUntil (300);
+                check (hosted.getOrCreateEditor() == ed, "editor is reused while open");
+            }
+
+            hosted.releaseEditor();
+            check (hosted.getEditor() == nullptr && parent.getNumChildComponents() == 0, "editor released and removed from parent");
+            check (hosted.getOrCreateEditor() != nullptr, "editor can be created again");
+            hosted.releaseEditor();
+            parent.removeFromDesktop();
+        }
+
         // 3. 保存状态
         savedState = hosted.saveState();
         check (savedState.isValid() && savedState.getProperty ("state").toString().isNotEmpty(), "state saved");
