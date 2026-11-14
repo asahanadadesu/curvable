@@ -21,6 +21,7 @@ add_subdirectory(libs/JUCE)
 add_library(curvable_core STATIC
     src/model/Project.cpp
     src/model/NoteEditing.cpp
+    src/model/PitchCurve.cpp
     src/engine/PitchBend.cpp
     src/engine/Schedule.cpp
     src/engine/SketchPlayer.cpp

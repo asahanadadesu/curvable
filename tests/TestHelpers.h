@@ -31,6 +31,7 @@ struct EngineRunner
     PlaybackEngine engine;
     Schedule schedule;
     std::vector<AbsEvent> events;
+    std::vector<std::pair<long long, int>> wheels; ///< 弯音事件（绝对采样位置, 值）
     long long position = 0; ///< 已处理的采样数（绝对）
 
     void block (int numSamples, const HostTransport& transport, PlaybackMode mode = PlaybackMode::automatic,
@@ -40,7 +41,12 @@ struct EngineRunner
         engine.process (mode, &schedule, transport, numSamples, hostNotes.data(), (int) hostNotes.size(), out);
 
         for (const auto& e : out.get())
-            events.push_back ({ position + e.sampleOffset, e.noteOn, e.pitch });
+        {
+            if (e.isPitchWheel)
+                wheels.emplace_back (position + e.sampleOffset, e.wheelValue);
+            else
+                events.push_back ({ position + e.sampleOffset, e.noteOn, e.pitch });
+        }
 
         position += numSamples;
     }

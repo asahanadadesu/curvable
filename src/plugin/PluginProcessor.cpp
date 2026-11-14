@@ -143,6 +143,12 @@ void CurvableProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mi
 
     for (const auto& e : sketchEvents.get())
     {
+        if (e.isPitchWheel)
+        {
+            scratchMidi.addEvent (juce::MidiMessage::pitchWheel (1, e.wheelValue), e.sampleOffset);
+            continue;
+        }
+
         scratchMidi.addEvent (e.noteOn ? juce::MidiMessage::noteOn (1, e.pitch, (juce::uint8) e.velocity)
                                        : juce::MidiMessage::noteOff (1, e.pitch),
                               e.sampleOffset);

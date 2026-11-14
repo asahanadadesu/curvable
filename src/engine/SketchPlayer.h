@@ -7,13 +7,20 @@
 namespace curvable
 {
 
-/** 引擎输出的一个 MIDI 音符事件。 */
+/** 引擎输出的一个 MIDI 事件：音符开 / 关，或弯音（isPitchWheel）。 */
 struct MidiNoteEvent
 {
     int sampleOffset = 0; ///< 在当前音频块内的位置
     bool noteOn = false;
     int pitch = 60;
     int velocity = 0;     ///< note off 时为 0
+    bool isPitchWheel = false;
+    int wheelValue = 8192; ///< 14 位弯音值（isPitchWheel 时有效）
+
+    static MidiNoteEvent pitchWheel (int sampleOffset, int value) noexcept
+    {
+        return { sampleOffset, false, 0, 0, true, value };
+    }
 
     bool operator== (const MidiNoteEvent&) const = default;
 };
@@ -46,6 +53,11 @@ private:
     只在音频线程上使用（prepare 除外），不分配内存。
     同一音高的音符重叠时：后一个会重新触发（先 off 再 on），只有最后一个结束时才真正发送 note off，
     避免早结束的音符把仍在响的同音高音符切断。
+
+    弯音（单实例 Pitch Wheel 模式）：弯音轮跟随最近开始、仍在发声的音符的曲线。
+    - 音符开始时，先在同一采样上发送它起点处的弯音值，再发 note on（滑入的音不会先响一下原音高）。
+    - 发声期间每 bendInterval 个采样求值一次，值变化时才发送。
+    - 音符结束后保持最后的值（释放尾音不会跳回原音高），直到下一个音符开始；停止播放时回到中心。
 */
 class SketchPlayer
 {
@@ -77,12 +89,17 @@ public:
 
     bool hasActiveNotes() const noexcept { return ! active.empty(); }
 
+    /** 弯音求值的间隔（采样）。 */
+    static constexpr int bendInterval = 32;
+
 private:
     struct Active
     {
         NoteId id;
         int pitch;
         double end;
+        const ScheduledNote* note; ///< 指向当前 Schedule 中的数据（用于求弯音）
+        std::uint64_t order;       ///< 开始的先后
     };
 
     struct Action
@@ -94,13 +111,25 @@ private:
         int pitch;
     };
 
-    void activate (const ScheduledNote&, int sampleOffset, MidiEventList& out);
+    void activate (const ScheduledNote&, double beat, int sampleOffset, MidiEventList& out);
     void deactivate (std::size_t activeIndex, int sampleOffset, MidiEventList& out);
+
+    const Active* findWheelOwner() const noexcept;
+    void sendWheel (int value, int sampleOffset, MidiEventList& out);
+    int wheelValueAt (const ScheduledNote&, double beat) const noexcept;
+
+    /** 在 [beatFrom, beatTo) 对应的采样上按间隔更新弯音。 */
+    void renderBends (double beatFrom, double beatTo, double from, double sampleAtFrom,
+                      int blockStart, int blockEnd, double samplesPerBeat, MidiEventList& out);
 
     const Schedule* schedule = nullptr;
     std::vector<Active> active;
     std::vector<Action> actions;
     int pitchCount[128] {};
+
+    NoteId wheelOwner = 0;
+    int lastWheel = 8192;
+    std::uint64_t activationCounter = 0;
 };
 
 } // namespace curvable

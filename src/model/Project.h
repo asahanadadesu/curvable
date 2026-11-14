@@ -1,5 +1,7 @@
 #pragma once
 
+#include "model/PitchCurve.h"
+
 #include <cstdint>
 #include <vector>
 
@@ -16,6 +18,7 @@ struct Note
     double length = 1.0;   ///< 时长（拍），必须 > 0
     int pitch = 60;        ///< MIDI 音高 0..127
     float velocity = 0.8f; ///< 0..1
+    PitchCurve curve;      ///< 音高曲线（相对本音符）；没有节点即不弯音
 
     double getEnd() const noexcept { return start + length; }
 
@@ -48,6 +51,13 @@ struct Project
     std::vector<TriggerCue> cues { TriggerCue {} };
     PlaybackMode mode = PlaybackMode::automatic;
     NoteId nextId = 1;
+
+    /** 弯音范围（单向，半音），必须与音源的设置一致，否则音高会不准。 */
+    double bendRange = defaultBendRange;
+
+    static constexpr double defaultBendRange = 2.0; ///< 大多数音源的默认值
+    static constexpr double minBendRange = 1.0;
+    static constexpr double maxBendRange = 96.0;
 
     /** 添加一个音符并分配 id。 */
     NoteId addNote (double start, double length, int pitch, float velocity);

@@ -139,7 +139,11 @@ IdSet pasteNotes (Project& p, const std::vector<Note>& clip, double atBeat)
     atBeat = std::max (0.0, atBeat);
 
     for (const auto& n : clip)
-        added.insert (p.addNote (atBeat + n.start, n.length, n.pitch, n.velocity));
+    {
+        const auto id = p.addNote (atBeat + n.start, n.length, n.pitch, n.velocity);
+        p.notes.back().curve = n.curve; // 曲线跟着音符走
+        added.insert (id);
+    }
 
     return added;
 }
@@ -196,6 +200,67 @@ IdSet existingOnly (const Project& p, const IdSet& ids)
             result.insert (n.id);
 
     return result;
+}
+
+Note* findNote (Project& p, NoteId id)
+{
+    for (auto& n : p.notes)
+        if (n.id == id)
+            return &n;
+
+    return nullptr;
+}
+
+//==============================================================================
+int insertCurvePoint (PitchCurve& curve, double time, double semitones)
+{
+    time = std::max (0.0, time);
+
+    if (curve.points.empty() && time > 1.0e-9)
+        curve.points.push_back ({ 0.0, 0.0, 0.0f });
+
+    const auto it = std::upper_bound (curve.points.begin(), curve.points.end(), time,
+                                      [] (double t, const CurvePoint& p) { return t < p.time; });
+
+    // 插在一段中间时沿用这一段的弯曲程度
+    const auto tension = it != curve.points.begin() ? std::prev (it)->tension : 0.0f;
+    const auto inserted = curve.points.insert (it, { time, semitones, tension });
+    return (int) std::distance (curve.points.begin(), inserted);
+}
+
+void moveCurvePoint (PitchCurve& curve, int index, double time, double semitones, double length)
+{
+    if (index < 0 || index >= (int) curve.points.size())
+        return;
+
+    auto lo = 0.0, hi = std::max (0.0, length);
+
+    if (index > 0)
+        lo = std::max (lo, curve.points[(size_t) index - 1].time);
+
+    if (index + 1 < (int) curve.points.size())
+        hi = std::min (hi, curve.points[(size_t) index + 1].time);
+
+    auto& p = curve.points[(size_t) index];
+    p.time = std::clamp (time, lo, std::max (lo, hi));
+    p.semitones = semitones;
+}
+
+void removeCurvePoint (PitchCurve& curve, int index)
+{
+    if (index < 0 || index >= (int) curve.points.size())
+        return;
+
+    curve.points.erase (curve.points.begin() + index);
+
+    if (curve.isFlat())
+        curve.points.clear();
+}
+
+void setCurveTension (PitchCurve& curve, int index, float tension)
+{
+    if (index >= 0 && index < (int) curve.points.size())
+        curve.points[(size_t) index].tension = std::clamp (tension, -1.0f, 1.0f);
 }
 
 const Note* findNote (const Project& p, NoteId id)

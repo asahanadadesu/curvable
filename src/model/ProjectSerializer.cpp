@@ -19,6 +19,11 @@ namespace
         const juce::Identifier pitch    { "pitch" };
         const juce::Identifier velocity { "velocity" };
         const juce::Identifier key      { "key" };
+        const juce::Identifier point    { "Point" };
+        const juce::Identifier time     { "t" };
+        const juce::Identifier offset   { "st" };
+        const juce::Identifier tension  { "tension" };
+        const juce::Identifier bendRange { "bendRange" };
     }
 
     // 枚举按名字保存，以后调整枚举顺序也不会读错
@@ -52,6 +57,7 @@ juce::ValueTree ProjectSerializer::toValueTree (const Project& project)
     tree.setProperty (ids::version, currentVersion, nullptr);
     tree.setProperty (ids::mode, modeToString (project.mode), nullptr);
     tree.setProperty (ids::nextId, idToString (project.nextId), nullptr);
+    tree.setProperty (ids::bendRange, project.bendRange, nullptr);
 
     for (const auto& n : project.notes)
     {
@@ -61,6 +67,19 @@ juce::ValueTree ProjectSerializer::toValueTree (const Project& project)
         note.setProperty (ids::length, n.length, nullptr);
         note.setProperty (ids::pitch, n.pitch, nullptr);
         note.setProperty (ids::velocity, n.velocity, nullptr);
+
+        for (const auto& p : n.curve.points)
+        {
+            juce::ValueTree point (ids::point);
+            point.setProperty (ids::time, p.time, nullptr);
+            point.setProperty (ids::offset, p.semitones, nullptr);
+
+            if (p.tension != 0.0f)
+                point.setProperty (ids::tension, p.tension, nullptr);
+
+            note.appendChild (point, nullptr);
+        }
+
         tree.appendChild (note, nullptr);
     }
 
@@ -89,6 +108,10 @@ std::optional<Project> ProjectSerializer::fromValueTree (const juce::ValueTree& 
     project.cues.clear();
     project.mode = modeFromString (tree.getProperty (ids::mode).toString());
 
+    const auto bendRange = (double) tree.getProperty (ids::bendRange, Project::defaultBendRange);
+    project.bendRange = std::isfinite (bendRange) ? std::clamp (bendRange, Project::minBendRange, Project::maxBendRange)
+                                                  : Project::defaultBendRange;
+
     NoteId maxId = 0;
 
     for (const auto& child : tree)
@@ -101,6 +124,14 @@ std::optional<Project> ProjectSerializer::fromValueTree (const juce::ValueTree& 
             n.length   = child.getProperty (ids::length, 1.0);
             n.pitch    = child.getProperty (ids::pitch, 60);
             n.velocity = (float) (double) child.getProperty (ids::velocity, 0.8);
+
+            for (const auto& pointTree : child)
+                if (pointTree.hasType (ids::point))
+                    n.curve.points.push_back ({ (double) pointTree.getProperty (ids::time, 0.0),
+                                                (double) pointTree.getProperty (ids::offset, 0.0),
+                                                (float) (double) pointTree.getProperty (ids::tension, 0.0) });
+
+            n.curve.normalise();
             project.notes.push_back (n);
             maxId = std::max (maxId, n.id);
         }

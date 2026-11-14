@@ -180,7 +180,7 @@ struct PianoRoll::NoteArea final : public juce::Component
 {
     explicit NoteArea (PianoRoll& o) : owner (o) {}
 
-    enum class Mode { none, move, resize, marquee, erase };
+    enum class Mode { none, move, resize, marquee, erase, curvePoint, curveTension };
 
     struct Hit
     {
@@ -188,28 +188,95 @@ struct PianoRoll::NoteArea final : public juce::Component
         bool edge = false;
     };
 
+    /** 曲线工具下鼠标位置命中的东西。 */
+    struct CurveHit
+    {
+        NoteId id = 0;
+        int point = -1;   ///< 节点下标
+        int segment = -1; ///< 弯曲手柄所在的段（起点节点的下标）
+    };
+
+    //==============================================================================
+    // 音符几何：音符是一条沿自身曲线弯曲的胶囊（圆头粗线）
+    float bodyThickness() const
+    {
+        const auto rh = (float) owner.view.rowHeight;
+        const auto pad = juce::jlimit (1.0f, 2.5f, rh * 0.14f);
+        return rh - pad * 2.0f;
+    }
+
+    /** 音符中线在 time（相对音符起点）处的 y。 */
+    float centreY (const Note& n, double time) const
+    {
+        const auto& v = owner.view;
+        return (float) (v.pitchToY (n.pitch) + v.rowHeight * 0.5 - n.curve.evaluate (time) * v.rowHeight);
+    }
+
+    float pointY (const Note& n, double semitones) const
+    {
+        const auto& v = owner.view;
+        return (float) (v.pitchToY (n.pitch) + v.rowHeight * 0.5 - semitones * v.rowHeight);
+    }
+
     juce::Rectangle<float> noteBounds (const Note& n) const
     {
         const auto& v = owner.view;
         const auto x0 = (float) v.beatToX (n.start), x1 = (float) v.beatToX (n.getEnd());
-        const auto y = (float) v.pitchToY (n.pitch);
-        const auto rh = (float) v.rowHeight;
-        const auto pad = juce::jlimit (1.0f, 2.5f, rh * 0.14f);
-        return { x0 + 1.0f, y + pad, juce::jmax (3.0f, x1 - x0 - 2.0f), rh - pad * 2.0f };
+        const auto h = bodyThickness();
+        const auto y = centreY (n, 0.0) - h / 2.0f;
+        return { x0 + 1.0f, y, juce::jmax (3.0f, x1 - x0 - 2.0f), h };
+    }
+
+    /** 音符本体的轮廓（填充用）。 */
+    juce::Path bodyPath (const Note& n) const
+    {
+        const auto r = noteBounds (n);
+        juce::Path path;
+
+        if (n.curve.isFlat())
+        {
+            path.addRoundedRectangle (r, r.getHeight() / 2.0f);
+            return path;
+        }
+
+        // 中线从左端圆头的圆心画到右端圆头的圆心，再描成粗线
+        const auto& v = owner.view;
+        const auto half = r.getHeight() / 2.0f;
+        const auto xa = r.getX() + half;
+        const auto xb = juce::jmax (xa, r.getRight() - half);
+
+        juce::Path centre;
+        auto yAt = [&] (float x) { return centreY (n, juce::jlimit (0.0, n.length, v.xToBeat (x) - n.start)); };
+        centre.startNewSubPath (xa, yAt (xa));
+
+        constexpr float step = 2.0f;
+        for (auto x = xa + step; x < xb; x += step)
+            centre.lineTo (x, yAt (x));
+
+        centre.lineTo (xb + 0.01f, yAt (xb)); // 长度为 0 时也要有一点，才画得出圆点
+
+        juce::PathStrokeType (r.getHeight(), juce::PathStrokeType::curved, juce::PathStrokeType::rounded)
+            .createStrokedPath (path, centre);
+        return path;
     }
 
     Hit hitTest (juce::Point<float> pos) const
     {
         const auto& notes = owner.project.notes;
-        const auto rh = (float) owner.view.rowHeight;
+        const auto& v = owner.view;
+        const auto rh = (float) v.rowHeight;
 
         // 后画的在上面，所以倒序查找
         for (auto it = notes.rbegin(); it != notes.rend(); ++it)
         {
             const auto r = noteBounds (*it);
-            const auto rowY = (float) owner.view.pitchToY (it->pitch);
 
-            if (pos.x >= r.getX() && pos.x <= r.getRight() && pos.y >= rowY && pos.y < rowY + rh)
+            if (pos.x < r.getX() || pos.x > r.getRight())
+                continue;
+
+            // 沿曲线判断：离中线不超过半行就算命中（不弯的音符就是整行）
+            const auto t = juce::jlimit (0.0, it->length, v.xToBeat (pos.x) - it->start);
+            if (std::abs (pos.y - centreY (*it, t)) <= rh * 0.5f)
             {
                 const auto edgeWidth = juce::jlimit (3.0f, 8.0f, r.getWidth() * 0.3f);
                 return { it->id, pos.x >= r.getRight() - edgeWidth };
@@ -217,6 +284,83 @@ struct PianoRoll::NoteArea final : public juce::Component
         }
 
         return {};
+    }
+
+    /** 节点的屏幕位置；超出音符长度的节点（音符被缩短后）不显示。 */
+    std::optional<juce::Point<float>> pointPosition (const Note& n, const CurvePoint& p) const
+    {
+        if (p.time > n.length + 1.0e-9)
+            return std::nullopt;
+
+        return juce::Point<float> ((float) owner.view.beatToX (n.start + p.time), pointY (n, p.semitones));
+    }
+
+    std::optional<juce::Point<float>> handlePosition (const Note& n, int segment) const
+    {
+        const auto& pts = n.curve.points;
+
+        if (segment < 0 || segment + 1 >= (int) pts.size())
+            return std::nullopt;
+
+        const auto& a = pts[(size_t) segment];
+        const auto& b = pts[(size_t) segment + 1];
+
+        // 两端一样高（没有弯曲可调）或这一段太短时不显示手柄
+        if (a.semitones == b.semitones || b.time > n.length + 1.0e-9
+            || (b.time - a.time) * owner.view.pixelsPerBeat < 16.0)
+            return std::nullopt;
+
+        const auto mid = (a.time + b.time) * 0.5;
+        return juce::Point<float> ((float) owner.view.beatToX (n.start + mid), centreY (n, mid));
+    }
+
+    CurveHit curveHitTest (juce::Point<float> pos) const
+    {
+        const auto& notes = owner.project.notes;
+
+        // 先看正在编辑的音符（它的节点画在最上面）
+        auto test = [&] (const Note& n) -> CurveHit
+        {
+            for (int i = (int) n.curve.points.size(); --i >= 0;)
+                if (const auto p = pointPosition (n, n.curve.points[(size_t) i]); p && p->getDistanceFrom (pos) <= 7.0f)
+                    return { n.id, i, -1 };
+
+            for (int i = 0; i + 1 < (int) n.curve.points.size(); ++i)
+                if (const auto h = handlePosition (n, i); h && h->getDistanceFrom (pos) <= 6.0f)
+                    return { n.id, -1, i };
+
+            return {};
+        };
+
+        if (const auto* focus = editing::findNote (owner.project, focusNote))
+            if (const auto hit = test (*focus); hit.id != 0)
+                return hit;
+
+        for (auto it = notes.rbegin(); it != notes.rend(); ++it)
+            if (const auto hit = test (*it); hit.id != 0)
+                return hit;
+
+        if (const auto hit = hitTest (pos); hit.id != 0)
+            return { hit.id, -1, -1 };
+
+        return {};
+    }
+
+    /** 鼠标位置 → 曲线节点（相对音符的拍、半音），默认吸附到网格和半音，Alt 不吸附。 */
+    std::pair<double, double> mouseToCurve (const Note& n, juce::Point<float> pos, bool noSnap) const
+    {
+        const auto& v = owner.view;
+        auto beat = v.xToBeat (pos.x);
+
+        if (! noSnap)
+            beat = editing::snapNearest (beat, owner.grid);
+
+        auto semitones = (v.pitchToY (n.pitch) + v.rowHeight * 0.5 - pos.y) / v.rowHeight;
+
+        if (! noSnap)
+            semitones = std::round (semitones);
+
+        return { juce::jlimit (0.0, n.length, beat - n.start), semitones };
     }
 
     //==============================================================================
@@ -260,17 +404,33 @@ struct PianoRoll::NoteArea final : public juce::Component
         drawLines (1.0, p.line);
         drawLines (4.0, p.lineStrong);
 
-        // 音符：凸起的胶囊，颜色表示力度；选中的加暖色描边
+        // 音符：凸起的胶囊，沿自身曲线弯曲；颜色表示力度；选中的加暖色描边
+        const bool curveTool = owner.tool == Tool::curve;
+        const Note* focus = nullptr;
+
         for (const auto& n : owner.project.notes)
         {
             const auto r = noteBounds (n);
 
-            if (r.getRight() < 0.0f || r.getX() > w || r.getBottom() < 0.0f || r.getY() > h)
+            if (r.getRight() < 0.0f || r.getX() > w)
                 continue;
 
-            const auto radius = r.getHeight() / 2.0f;
-            juce::Path path;
-            path.addRoundedRectangle (r, radius);
+            const auto path = bodyPath (n);
+
+            if (! path.getBounds().intersects (juce::Rectangle<float> (0.0f, 0.0f, w, h)))
+                continue;
+
+            if (n.id == focusNote)
+                focus = &n;
+
+            // 曲线工具下，弯过的音符在原音高处画一条细线作参照
+            if (curveTool && ! n.curve.isFlat())
+            {
+                const auto baseY = pointY (n, 0.0);
+                const float dashes[] = { 3.0f, 3.0f };
+                g.setColour (p.muted.withAlpha (0.45f));
+                g.drawDashedLine ({ r.getX(), baseY, r.getRight(), baseY }, dashes, 2, 1.0f);
+            }
 
             const auto colour = p.noteColour (n.velocity);
             neu::raisedFast (g, path, colour, p, 1.2f);
@@ -278,16 +438,23 @@ struct PianoRoll::NoteArea final : public juce::Component
             if (owner.selection.count (n.id) != 0)
             {
                 g.setColour (p.warm);
-                g.drawRoundedRectangle (r.expanded (1.0f), radius + 1.0f, 2.0f);
+                g.strokePath (path, juce::PathStrokeType (2.0f));
             }
 
             if (r.getWidth() > 34.0f && r.getHeight() >= 10.0f)
             {
                 g.setColour (p.textOn (colour).withAlpha (0.8f));
                 g.setFont (juce::FontOptions (juce::jmin (11.0f, r.getHeight() - 1.0f)));
-                g.drawText (noteName (n.pitch), r.withTrimmedLeft (radius * 0.8f), juce::Justification::centredLeft, false);
+                g.drawText (noteName (n.pitch), r.withTrimmedLeft (r.getHeight() * 0.4f), juce::Justification::centredLeft, false);
             }
+
+            if (curveTool)
+                paintCurvePoints (g, n, false);
         }
+
+        // 正在编辑的音符：节点画在最上面，并显示弯曲手柄
+        if (curveTool && focus != nullptr)
+            paintCurvePoints (g, *focus, true);
 
         if (mode == Mode::marquee && ! marquee.isEmpty())
         {
@@ -304,10 +471,73 @@ struct PianoRoll::NoteArea final : public juce::Component
         }
     }
 
+    void paintCurvePoints (juce::Graphics& g, const Note& n, bool focused) const
+    {
+        const auto& p = owner.palette;
+        const auto range = owner.project.bendRange;
+
+        if (focused)
+        {
+            for (int i = 0; i + 1 < (int) n.curve.points.size(); ++i)
+            {
+                if (const auto pos = handlePosition (n, i))
+                {
+                    const auto active = mode == Mode::curveTension && curveIndex == i;
+                    g.setColour (p.bg);
+                    g.fillEllipse (juce::Rectangle<float> (8.0f, 8.0f).withCentre (*pos));
+                    g.setColour (active ? p.warm : p.text.withAlpha (0.7f));
+                    g.drawEllipse (juce::Rectangle<float> (8.0f, 8.0f).withCentre (*pos), 1.5f);
+                }
+            }
+        }
+
+        for (int i = 0; i < (int) n.curve.points.size(); ++i)
+        {
+            const auto& point = n.curve.points[(size_t) i];
+            const auto pos = pointPosition (n, point);
+
+            if (! pos)
+                continue;
+
+            // 超出弯音范围的节点标成错误色（发声时会被截断）
+            const auto outOfRange = std::abs (point.semitones) > range + 1.0e-9;
+            const auto active = focused && mode == Mode::curvePoint && curveIndex == i;
+            const auto size = active ? 11.0f : (focused ? 9.0f : 7.0f);
+            const auto dot = juce::Rectangle<float> (size, size).withCentre (*pos);
+
+            g.setColour (p.bg);
+            g.fillEllipse (dot.expanded (1.5f));
+            g.setColour (outOfRange ? p.error : (active ? p.warm : p.accent));
+            g.fillEllipse (dot);
+
+            // 拖动时显示数值
+            if (active)
+            {
+                const auto st = point.semitones;
+                const auto text = std::abs (st - std::round (st)) < 1.0e-6
+                                      ? juce::String (st > 0 ? "+" : "") + juce::String ((int) std::round (st)) + " st"
+                                      : juce::String (st > 0 ? "+" : "") + juce::String (st, 2) + " st";
+
+                g.setFont (juce::FontOptions (12.0f, juce::Font::bold));
+                const auto box = juce::Rectangle<float> (64.0f, 18.0f).withCentre (pos->translated (0.0f, -16.0f));
+                g.setColour (p.bg.withAlpha (0.9f));
+                g.fillRoundedRectangle (box, 6.0f);
+                g.setColour (outOfRange ? p.error : p.text);
+                g.drawText (text, box, juce::Justification::centred, false);
+            }
+        }
+    }
+
     //==============================================================================
     void mouseDown (const juce::MouseEvent& e) override
     {
         owner.grabKeyboardFocus();
+
+        if (owner.tool == Tool::curve)
+        {
+            curveMouseDown (e);
+            return;
+        }
 
         const auto& v = owner.view;
         downBeat = v.xToBeat (e.position.x);
@@ -441,8 +671,131 @@ struct PianoRoll::NoteArea final : public juce::Component
                 eraseAt (e.position);
                 break;
 
+            case Mode::curvePoint:
+            {
+                auto working = base;
+
+                if (auto* n = editing::findNote (working, focusNote))
+                {
+                    const auto [t, st] = mouseToCurve (*n, e.position, noSnap);
+                    editing::moveCurvePoint (n->curve, curveIndex, t, st, n->length);
+                    owner.updateDrag (std::move (working));
+                }
+                break;
+            }
+
+            case Mode::curveTension:
+            {
+                auto working = base;
+
+                if (auto* n = editing::findNote (working, focusNote); n != nullptr
+                    && curveIndex + 1 < (int) n->curve.points.size())
+                {
+                    // 往下拖，曲线往下弯；往上拖，往上弯（与这一段是升是降无关）
+                    const auto& a = n->curve.points[(size_t) curveIndex];
+                    const auto& b = n->curve.points[(size_t) curveIndex + 1];
+                    const auto direction = b.semitones > a.semitones ? 1.0f : -1.0f;
+                    const auto dy = e.position.y - e.mouseDownPosition.y;
+                    editing::setCurveTension (n->curve, curveIndex, tensionStart + direction * dy / 80.0f);
+                    owner.updateDrag (std::move (working));
+                }
+                break;
+            }
+
             case Mode::none:
                 break;
+        }
+    }
+
+    //==============================================================================
+    // 曲线工具
+    void curveMouseDown (const juce::MouseEvent& e)
+    {
+        const auto hit = curveHitTest (e.position);
+        mode = Mode::none;
+        curveIndex = -1;
+
+        if (hit.id == 0)
+        {
+            setFocusNote (0);
+            owner.setSelection ({});
+            return;
+        }
+
+        setFocusNote (hit.id);
+        owner.setSelection ({ hit.id });
+
+        // 右键：删除节点
+        if (e.mods.isPopupMenu())
+        {
+            if (hit.point >= 0)
+            {
+                const auto id = hit.id;
+                const auto index = hit.point;
+                owner.edit ("Delete bend point", [&] (Project& p)
+                {
+                    if (auto* n = editing::findNote (p, id))
+                        editing::removeCurvePoint (n->curve, index);
+                });
+            }
+            return;
+        }
+
+        owner.beginDrag();
+        base = owner.dragOrigin;
+        auto* n = editing::findNote (base, hit.id);
+
+        if (n == nullptr)
+            return;
+
+        if (hit.segment >= 0)
+        {
+            mode = Mode::curveTension;
+            curveIndex = hit.segment;
+            tensionStart = n->curve.points[(size_t) hit.segment].tension;
+            curveEditName = "Change curve shape";
+            return;
+        }
+
+        if (hit.point >= 0)
+        {
+            mode = Mode::curvePoint;
+            curveIndex = hit.point;
+            curveEditName = "Move bend point";
+            return;
+        }
+
+        // 点在音符本体上：在这里加一个节点，接着可以拖动它
+        const auto [t, st] = mouseToCurve (*n, e.position, e.mods.isAltDown());
+        curveIndex = editing::insertCurvePoint (n->curve, t, st);
+        mode = Mode::curvePoint;
+        curveEditName = "Add bend point";
+        owner.updateDrag (base);
+    }
+
+    void mouseDoubleClick (const juce::MouseEvent& e) override
+    {
+        // 曲线工具：双击音符，去掉整条曲线
+        if (owner.tool != Tool::curve || e.mods.isPopupMenu())
+            return;
+
+        if (const auto hit = hitTest (e.position); hit.id != 0)
+        {
+            const auto id = hit.id;
+            owner.edit ("Remove curve", [&] (Project& p)
+            {
+                if (auto* n = editing::findNote (p, id))
+                    n->curve.points.clear();
+            });
+        }
+    }
+
+    void setFocusNote (NoteId id)
+    {
+        if (id != focusNote)
+        {
+            focusNote = id;
+            repaint();
         }
     }
 
@@ -464,6 +817,11 @@ struct PianoRoll::NoteArea final : public juce::Component
                 owner.endDrag ("Delete notes");
                 break;
 
+            case Mode::curvePoint:
+            case Mode::curveTension:
+                owner.endDrag (curveEditName);
+                break;
+
             case Mode::marquee:
                 marquee = {};
                 repaint();
@@ -480,6 +838,27 @@ struct PianoRoll::NoteArea final : public juce::Component
     void mouseMove (const juce::MouseEvent& e) override
     {
         owner.lastMouseBeat = owner.view.xToBeat (e.position.x);
+
+        if (owner.tool == Tool::curve)
+        {
+            const auto hit = curveHitTest (e.position);
+
+            // 悬停的音符成为"正在编辑"的音符（显示手柄）；移开后保留选中的那个
+            if (hit.id != 0)
+                setFocusNote (hit.id);
+            else if (owner.selection.size() == 1)
+                setFocusNote (*owner.selection.begin());
+            else
+                setFocusNote (0);
+
+            if (hit.point >= 0)
+                setMouseCursor (juce::MouseCursor::DraggingHandCursor);
+            else if (hit.segment >= 0)
+                setMouseCursor (juce::MouseCursor::UpDownResizeCursor);
+            else
+                setMouseCursor (hit.id != 0 ? juce::MouseCursor::CrosshairCursor : juce::MouseCursor::NormalCursor);
+            return;
+        }
         const auto hit = hitTest (e.position);
 
         if (hit.id != 0)
@@ -529,6 +908,12 @@ struct PianoRoll::NoteArea final : public juce::Component
     int downPitch = 0;
     editing::IdSet marqueeBase;
     juce::Rectangle<float> marquee;
+
+    // 曲线工具
+    NoteId focusNote = 0;       ///< 显示手柄的音符（悬停或正在编辑）
+    int curveIndex = -1;        ///< 正在拖动的节点 / 段
+    float tensionStart = 0.0f;
+    juce::String curveEditName;
 };
 
 //==============================================================================
@@ -670,12 +1055,19 @@ struct PianoRoll::ShortcutsPanel final : public juce::Component
                 { "\xe2\x86\x90 \xe2\x86\x92", "Move by the snap step (Shift: bar)" },
                 { "Ctrl + Z / Ctrl + Y", "Undo / redo" },
             } },
+            { "Pitch curves (Curve tool)", {
+                { "Click a note", "Add a bend point (keep dragging)" },
+                { "Drag a point", "Move it (snaps to semitones, grid)" },
+                { "Drag a small circle", "Change the curve shape" },
+                { "Right-click a point", "Delete it" },
+                { "Double-click a note", "Remove its whole curve" },
+            } },
             { "View & tools", {
                 { "Wheel", "Scroll up / down" },
                 { "Shift + wheel", "Scroll left / right" },
                 { "Ctrl + wheel", "Zoom horizontally" },
                 { "Ctrl + Shift + wheel", "Zoom vertically" },
-                { "P  /  E", "Draw tool / Select tool" },
+                { "P  /  E  /  C", "Draw / Select / Curve tool" },
                 { "F1  or  ?", "Show this list" },
             } },
         };
@@ -688,7 +1080,7 @@ struct PianoRoll::ShortcutsPanel final : public juce::Component
         g.fillAll (p.bg.withAlpha (0.82f));
 
         // 按固定的逻辑尺寸排版，窗口太小时整体缩小
-        constexpr float cardW = 760.0f, cardH = 470.0f;
+        constexpr float cardW = 760.0f, cardH = 560.0f;
         const auto area = getLocalBounds().toFloat().reduced (12.0f);
         const auto scale = juce::jmin (1.0f, area.getWidth() / cardW, area.getHeight() / cardH);
         const auto card = juce::Rectangle<float> (cardW * scale, cardH * scale).withCentre (area.getCentre());
@@ -737,7 +1129,7 @@ struct PianoRoll::ShortcutsPanel final : public juce::Component
         };
 
         drawColumn (32.0f, { 0, 1 });
-        drawColumn (32.0f + colW + 24.0f, { 2, 3 });
+        drawColumn (32.0f + colW + 24.0f, { 2, 3, 4 });
 
         g.restoreState();
     }
@@ -788,7 +1180,7 @@ PianoRoll::PianoRoll (CurvableProcessor& p, const Palette& pal)
 
     addChildComponent (shortcutsPanel.get());
 
-    for (auto* b : { &drawButton, &selectButton })
+    for (auto* b : { &drawButton, &selectButton, &curveButton })
     {
         CurvableLookAndFeel::setStyle (*b, "segment");
         b->setClickingTogglesState (true);
@@ -799,6 +1191,8 @@ PianoRoll::PianoRoll (CurvableProcessor& p, const Palette& pal)
 
     drawButton.setTooltip ("Draw (P): click to add notes, drag to set their length");
     selectButton.setTooltip ("Select (E): drag to select notes");
+    curveButton.setTooltip ("Curve (C): click a note to add bend points, drag them to bend the pitch");
+    curveButton.onClick  = [this] { if (curveButton.getToggleState()) setTool (Tool::curve); };
     drawButton.onClick   = [this] { if (drawButton.getToggleState()) setTool (Tool::draw); };
     selectButton.onClick = [this] { if (selectButton.getToggleState()) setTool (Tool::select); };
     drawButton.setToggleState (true, juce::dontSendNotification);
@@ -808,6 +1202,12 @@ PianoRoll::PianoRoll (CurvableProcessor& p, const Palette& pal)
     snapButton.onClick = [this] { showSnapMenu(); };
     snapButton.setButtonText ("Snap  " + getGridName());
     addAndMakeVisible (snapButton);
+
+    CurvableLookAndFeel::setStyle (bendButton, "pill");
+    bendButton.setWantsKeyboardFocus (false);
+    bendButton.setTooltip ("Pitch bend range. Set your synth's bend range to the same value.");
+    bendButton.onClick = [this] { showBendRangeMenu(); };
+    addAndMakeVisible (bendButton);
 
     processor.projectChanged.addChangeListener (this);
     pullProject();
@@ -854,13 +1254,16 @@ void PianoRoll::resized()
     keyboard->setBounds (keysBounds);
 
     // 底部工具栏
-    toolsBounds = bottom.removeFromLeft (180).withSizeKeepingCentre (180, 42);
+    toolsBounds = bottom.removeFromLeft (246).withSizeKeepingCentre (246, 42);
     auto tools = toolsBounds.reduced (4);
-    drawButton.setBounds (tools.removeFromLeft (tools.getWidth() / 2));
-    selectButton.setBounds (tools);
+    const auto toolWidth = tools.getWidth() / 3;
+    drawButton.setBounds (tools.removeFromLeft (toolWidth));
+    selectButton.setBounds (tools.removeFromLeft (toolWidth));
+    curveButton.setBounds (tools);
 
-    bottom.removeFromLeft (14);
-    snapButton.setBounds (bottom.removeFromLeft (130).withSizeKeepingCentre (130, 44));
+    bottom.removeFromLeft (12);
+    snapButton.setBounds (bottom.removeFromLeft (124).withSizeKeepingCentre (124, 44));
+    bendButton.setBounds (bottom.removeFromLeft (112).withSizeKeepingCentre (112, 44));
     helpButton.setBounds (bottom.removeFromRight (44).withSizeKeepingCentre (44, 44));
 
     shortcutsPanel->setBounds (getLocalBounds());
@@ -899,7 +1302,7 @@ void PianoRoll::paint (juce::Graphics& g)
 
     // 底部工具栏右侧：状态或操作提示
     auto statusArea = getLocalBounds().removeFromBottom (bottomBarHeight)
-                          .withTrimmedLeft (snapButton.getRight() + 16)
+                          .withTrimmedLeft (bendButton.getRight() + 12)
                           .withRight (helpButton.getX() - 8);
     g.setColour (statusIsError ? palette.error : palette.muted);
     g.setFont (juce::FontOptions (12.5f));
@@ -910,6 +1313,16 @@ void PianoRoll::paint (juce::Graphics& g)
 juce::String PianoRoll::getHint() const
 {
     // 只提示界面上看不出来的操作：工具、吸附、力度、滚动都有可见的控件，完整列表在 ? 里
+    if (tool == Tool::curve)
+    {
+        // 有弯音超出范围时优先提示（否则发声时会被截断）
+        for (const auto& n : project.notes)
+            if (n.curve.getMaxAbsOffset (n.length) > project.bendRange + 1.0e-9)
+                return "Some bends go past the bend range. Raise Bend (and your synth's range to match).";
+
+        return "Click a note  Add point    Drag circle  Shape    Right-click point  Delete    Alt  No snap";
+    }
+
     if (! selection.empty())
         return juce::String::fromUTF8 ("↑↓  Transpose    Ctrl+B  Duplicate    Del  Delete    Alt+drag  No snap");
 
@@ -966,6 +1379,7 @@ void PianoRoll::pullProject()
 {
     project = processor.getProject();
     selection = editing::existingOnly (project, selection);
+    refreshBendButton();
     updateScrollBars();
     repaintContent();
 }
@@ -1102,6 +1516,9 @@ void PianoRoll::setTool (Tool newTool)
     tool = newTool;
     drawButton.setToggleState (tool == Tool::draw, juce::dontSendNotification);
     selectButton.setToggleState (tool == Tool::select, juce::dontSendNotification);
+    curveButton.setToggleState (tool == Tool::curve, juce::dontSendNotification);
+    noteArea->repaint(); // 曲线工具会显示节点
+    repaint (getLocalBounds().removeFromBottom (bottomBarHeight));
 }
 
 juce::String PianoRoll::getGridName() const
@@ -1129,6 +1546,38 @@ void PianoRoll::showSnapMenu()
             self->grid = gridOptions[result - 1].beats;
             self->snapButton.setButtonText ("Snap  " + self->getGridName());
             self->noteArea->repaint();
+        }
+    });
+}
+
+void PianoRoll::refreshBendButton()
+{
+    const auto range = project.bendRange;
+    const auto text = std::abs (range - std::round (range)) < 1.0e-9 ? juce::String ((int) std::round (range))
+                                                                     : juce::String (range, 1);
+    bendButton.setButtonText (juce::String::fromUTF8 ("Bend \xc2\xb1") + text);
+}
+
+void PianoRoll::showBendRangeMenu()
+{
+    static constexpr int ranges[] = { 1, 2, 3, 4, 5, 7, 12, 24, 36, 48, 96 };
+
+    juce::PopupMenu menu;
+    menu.addSectionHeader ("Pitch bend range (semitones)");
+    menu.addSectionHeader ("Set your synth to the same value");
+
+    for (int i = 0; i < (int) std::size (ranges); ++i)
+        menu.addItem (i + 1, juce::String::fromUTF8 ("\xc2\xb1") + juce::String (ranges[i]),
+                      true, std::abs (project.bendRange - ranges[i]) < 1.0e-9);
+
+    juce::Component::SafePointer<PianoRoll> safeThis (this);
+    menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&bendButton), [safeThis] (int result)
+    {
+        if (auto* self = safeThis.getComponent(); self != nullptr && result > 0)
+        {
+            auto p = self->processor.getProject();
+            p.bendRange = ranges[result - 1];
+            self->processor.setProject (std::move (p));
         }
     });
 }
@@ -1207,6 +1656,7 @@ bool PianoRoll::keyPressed (const juce::KeyPress& key)
 
     if (! cmd && (code == 'P' || code == 'p')) { setTool (Tool::draw); return true; }
     if (! cmd && (code == 'E' || code == 'e')) { setTool (Tool::select); return true; }
+    if (! cmd && (code == 'C' || code == 'c')) { setTool (Tool::curve); return true; }
     if (code == juce::KeyPress::escapeKey)     { setSelection ({}); return true; }
     if (code == juce::KeyPress::F1Key || key.getTextCharacter() == '?') { showShortcuts (true); return true; }
 

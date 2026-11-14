@@ -13,6 +13,9 @@ class CurvableProcessor;
 
 /** Curvable 的卷帘编辑器：琴键、小节标尺、音符编辑区、力度区和底部工具栏。
 
+    Curve 工具：单击音符添加弯音节点并拖动；拖动节点移动（吸附半音和网格，Alt 不吸附）；
+    拖动段中间的小圆圈改变弯曲形状；右键节点删除；双击音符去掉整条曲线。
+
     鼠标（与 FL Studio 习惯一致）：
     - Draw 工具：在空白处单击添加音符，按住拖动设置时长；Select 工具：拖出框选
     - 拖动音符移动（时间 + 音高），拖动音符右端改变时长；Alt 拖动不吸附
@@ -49,7 +52,7 @@ public:
     /** 显示 / 隐藏全部操作说明（也可以按 F1 或 ?）。 */
     void showShortcuts (bool shouldShow);
 
-    enum class Tool { draw, select };
+    enum class Tool { draw, select, curve };
 
 private:
     struct Keyboard;
@@ -83,6 +86,8 @@ private:
     // 工具与吸附
     void setTool (Tool);
     void showSnapMenu();
+    void showBendRangeMenu();
+    void refreshBendButton();
     double getGrid() const noexcept { return grid; }
     juce::String getGridName() const;
 
@@ -107,7 +112,8 @@ private:
 
     juce::ScrollBar hScroll { false }, vScroll { true };
 
-    juce::TextButton drawButton { "Draw" }, selectButton { "Select" }, snapButton, helpButton { "?" };
+    juce::TextButton drawButton { "Draw" }, selectButton { "Select" }, curveButton { "Curve" };
+    juce::TextButton snapButton, bendButton, helpButton { "?" };
 
     RollView view;
     bool viewInitialised = false;

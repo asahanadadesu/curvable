@@ -24,7 +24,9 @@ Schedule Schedule::compile (const Project& project)
             continue;
 
         const auto velocity = std::clamp (static_cast<int> (std::lround (n.velocity * 127.0f)), 1, 127);
-        s.notes.push_back ({ n.id, n.start, n.start + n.length, n.pitch, velocity });
+        ScheduledNote scheduled { n.id, n.start, n.start + n.length, n.pitch, velocity, n.curve };
+        scheduled.curve.normalise();
+        s.notes.push_back (std::move (scheduled));
     }
 
     std::sort (s.notes.begin(), s.notes.end(), [] (const ScheduledNote& a, const ScheduledNote& b)
@@ -40,6 +42,9 @@ Schedule Schedule::compile (const Project& project)
 
     s.length = roundUpToBar (end, barLength);
     s.cues = project.cues;
+    s.bendRange = std::isfinite (project.bendRange)
+                      ? std::clamp (project.bendRange, Project::minBendRange, Project::maxBendRange)
+                      : Project::defaultBendRange;
     return s;
 }
 

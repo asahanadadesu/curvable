@@ -60,5 +60,22 @@ IdSet allNotes (const Project&);
 IdSet existingOnly (const Project&, const IdSet& ids);
 
 const Note* findNote (const Project&, NoteId);
+Note* findNote (Project&, NoteId);
+
+//==============================================================================
+// 音高曲线
+
+/** 在 time 处插入节点，返回它的下标。曲线原本为空时，先在音符起点补一个 0 偏移的节点
+    （这样第一次点击就是"从原音高滑到这里"）；time 在起点上时则不补。 */
+int insertCurvePoint (PitchCurve&, double time, double semitones);
+
+/** 移动节点：time 夹在相邻节点之间以及 [0, length] 之内（节点顺序不会改变）。 */
+void moveCurvePoint (PitchCurve&, int index, double time, double semitones, double length);
+
+/** 删除节点；剩下的节点全为 0 偏移时清空曲线（等同于不弯音）。 */
+void removeCurvePoint (PitchCurve&, int index);
+
+/** 改变 index 到下一个节点之间这一段的弯曲程度（夹在 -1..1）。 */
+void setCurveTension (PitchCurve&, int index, float tension);
 
 } // namespace curvable::editing

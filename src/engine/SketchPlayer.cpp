@@ -1,4 +1,5 @@
 #include "engine/SketchPlayer.h"
+#include "engine/PitchBend.h"
 
 #include <algorithm>
 #include <cmath>
@@ -23,10 +24,14 @@ SketchPlayer::SketchPlayer()
 }
 
 //==============================================================================
-void SketchPlayer::activate (const ScheduledNote& note, int sampleOffset, MidiEventList& out)
+void SketchPlayer::activate (const ScheduledNote& note, double beat, int sampleOffset, MidiEventList& out)
 {
     if (active.size() >= maxActiveNotes)
         return;
+
+    // 弯音轮交给新音符：先把弯音设到它当前位置的值，再发 note on
+    wheelOwner = note.id;
+    sendWheel (wheelValueAt (note, beat), sampleOffset, out);
 
     // 同音高已在发声：重新触发
     if (pitchCount[note.pitch] > 0)
@@ -34,7 +39,7 @@ void SketchPlayer::activate (const ScheduledNote& note, int sampleOffset, MidiEv
 
     out.add ({ sampleOffset, true, note.pitch, note.velocity });
     ++pitchCount[note.pitch];
-    active.push_back ({ note.id, note.pitch, note.end });
+    active.push_back ({ note.id, note.pitch, note.end, &note, ++activationCounter });
 }
 
 void SketchPlayer::deactivate (std::size_t index, int sampleOffset, MidiEventList& out)
@@ -47,8 +52,76 @@ void SketchPlayer::deactivate (std::size_t index, int sampleOffset, MidiEventLis
         out.add ({ sampleOffset, false, pitch, 0 });
     }
 
+    const auto id = active[index].id;
     active[index] = active.back();
     active.pop_back();
+
+    // 弯音轮交还给仍在发声的、最近开始的音符；没有的话保持当前值（释放尾音）
+    if (id == wheelOwner)
+    {
+        std::uint64_t latest = 0;
+        wheelOwner = 0;
+
+        for (const auto& a : active)
+            if (a.order > latest)
+            {
+                latest = a.order;
+                wheelOwner = a.id;
+            }
+    }
+}
+
+//==============================================================================
+const SketchPlayer::Active* SketchPlayer::findWheelOwner() const noexcept
+{
+    if (wheelOwner == 0)
+        return nullptr;
+
+    for (const auto& a : active)
+        if (a.id == wheelOwner)
+            return &a;
+
+    return nullptr;
+}
+
+void SketchPlayer::sendWheel (int value, int sampleOffset, MidiEventList& out)
+{
+    if (value == lastWheel)
+        return;
+
+    lastWheel = value;
+    out.add (MidiNoteEvent::pitchWheel (sampleOffset, value));
+}
+
+int SketchPlayer::wheelValueAt (const ScheduledNote& note, double beat) const noexcept
+{
+    if (note.curve.points.empty())
+        return 8192;
+
+    const auto t = std::clamp (beat - note.start, 0.0, note.end - note.start);
+    const auto range = schedule != nullptr ? schedule->bendRange : 2.0;
+    return centsToPitchBend (note.curve.evaluate (t) * 100.0, range).value;
+}
+
+void SketchPlayer::renderBends (double beatFrom, double beatTo, double from, double sampleAtFrom,
+                                int blockStart, int blockEnd, double samplesPerBeat, MidiEventList& out)
+{
+    const auto* owner = findWheelOwner();
+
+    if (owner == nullptr || owner->note == nullptr || owner->note->curve.points.empty())
+        return;
+
+    const auto firstSample = std::max (blockStart, toSampleIndex (sampleAtFrom + (beatFrom - from) * samplesPerBeat));
+    const auto endSample = std::min (blockEnd, toSampleIndex (sampleAtFrom + (beatTo - from) * samplesPerBeat));
+
+    // 采样位置对齐到间隔的整数倍（每块的第 0 个采样总会求值一次）
+    auto s = ((firstSample + bendInterval - 1) / bendInterval) * bendInterval;
+
+    for (; s < endSample; s += bendInterval)
+    {
+        const auto beat = from + (s - sampleAtFrom) / samplesPerBeat;
+        sendWheel (wheelValueAt (*owner->note, beat), s, out);
+    }
 }
 
 //==============================================================================
@@ -61,9 +134,14 @@ void SketchPlayer::setSchedule (const Schedule* newSchedule, double currentBeat,
         const auto* note = schedule != nullptr ? schedule->find (active[i].id) : nullptr;
 
         if (note == nullptr || note->pitch != active[i].pitch || note->end <= currentBeat)
+        {
             deactivate (i, sampleOffset, out);
+        }
         else
+        {
             active[i].end = note->end;
+            active[i].note = note;
+        }
     }
 }
 
@@ -109,14 +187,23 @@ void SketchPlayer::render (double from, double to, double sampleAtFrom, int bloc
         return ! a.isStart && b.isStart;
     });
 
+    // 按时间顺序处理音符事件，事件之间按间隔更新弯音
+    double cursor = from;
+
     for (const auto& action : actions)
     {
+        if (action.beat > cursor)
+        {
+            renderBends (cursor, action.beat, from, sampleAtFrom, blockStart, blockEnd, samplesPerBeat, out);
+            cursor = action.beat;
+        }
+
         const auto offset = std::clamp (toSampleIndex (sampleAtFrom + (action.beat - from) * samplesPerBeat),
                                         blockStart, blockEnd - 1);
 
         if (action.isStart)
         {
-            activate (*action.note, offset, out);
+            activate (*action.note, action.beat, offset, out);
             continue;
         }
 
@@ -129,6 +216,8 @@ void SketchPlayer::render (double from, double to, double sampleAtFrom, int bloc
             }
         }
     }
+
+    renderBends (cursor, to, from, sampleAtFrom, blockStart, blockEnd, samplesPerBeat, out);
 }
 
 void SketchPlayer::start (double beat, int sampleOffset, MidiEventList& out)
@@ -142,7 +231,7 @@ void SketchPlayer::start (double beat, int sampleOffset, MidiEventList& out)
             break; // 已排序；起点在 beat 及之后的交给 render
 
         if (note.end > beat + beatEpsilon)
-            activate (note, sampleOffset, out);
+            activate (note, beat, sampleOffset, out);
     }
 }
 
@@ -150,6 +239,10 @@ void SketchPlayer::stopAll (int sampleOffset, MidiEventList& out)
 {
     while (! active.empty())
         deactivate (active.size() - 1, sampleOffset, out);
+
+    // 停止播放：弯音回到中心，免得宿主里随后弹的音也是歪的
+    wheelOwner = 0;
+    sendWheel (8192, sampleOffset, out);
 }
 
 } // namespace curvable

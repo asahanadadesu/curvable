@@ -11,6 +11,7 @@ target_sources(curvable_tests PRIVATE
     ProjectSerializerTests.cpp
     NoteEditingTests.cpp
     RollViewTests.cpp
+    PitchCurveTests.cpp
     ${CURVABLE_JUCE_MODEL_SOURCES}
 )
 
