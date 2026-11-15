@@ -17,6 +17,7 @@ target_sources(curvable_tests PRIVATE
     GlideTests.cpp
     SliceChordTests.cpp
     TrillPresetTests.cpp
+    MidiExchangeTests.cpp
     ${CURVABLE_JUCE_MODEL_SOURCES}
 )
 
@@ -32,6 +33,7 @@ target_link_libraries(curvable_tests
         Catch2::Catch2WithMain
         juce::juce_core
         juce::juce_data_structures
+        juce::juce_audio_basics
     PUBLIC
         juce::juce_recommended_config_flags
         juce::juce_recommended_warning_flags

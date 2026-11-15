@@ -1870,6 +1870,8 @@ struct PianoRoll::ShortcutsPanel final : public juce::Component
                 { "Ctrl + Shift + wheel", "Zoom vertically" },
                 { "P  /  C  /  S", "Draw / Curve / Slice tool" },
                 { "Slice: click / drag", "Cut a note / cut every note the line crosses" },
+                { "Drop a MIDI file", "Add its notes (pitch bends become curves)" },
+                { "Drag the MIDI button", "Export to FL or another DAW" },
                 { "F1  or  ?", "Show this list" },
             } },
         };
@@ -2083,6 +2085,45 @@ struct PianoRoll::NamePrompt final : public juce::Component
     double noteLength = 1.0;
 };
 
+//==============================================================================
+// MIDI 按钮：单击弹出菜单，按住拖出去就是导出（拖到 FL 的 Playlist、其他 DAW 或文件夹）
+struct PianoRoll::MidiButton final : public juce::TextButton
+{
+    explicit MidiButton (PianoRoll& o) : juce::TextButton ("MIDI"), owner (o)
+    {
+        setWantsKeyboardFocus (false);
+        setMouseCursor (juce::MouseCursor::DraggingHandCursor);
+        onClick = [this]
+        {
+            // 拖出去之后松开鼠标也会触发单击，这时不弹菜单
+            if (std::exchange (dragged, false))
+                return;
+
+            owner.showMidiMenu();
+        };
+    }
+
+    void mouseDown (const juce::MouseEvent& e) override
+    {
+        dragged = false;
+        juce::TextButton::mouseDown (e);
+    }
+
+    void mouseDrag (const juce::MouseEvent& e) override
+    {
+        juce::TextButton::mouseDrag (e);
+
+        if (! dragged && e.getDistanceFromDragStart() > 6)
+        {
+            dragged = true;
+            owner.dragMidiOut();
+        }
+    }
+
+    PianoRoll& owner;
+    bool dragged = false;
+};
+
 void PianoRoll::savePreset (const PitchCurve& curve, double noteLength)
 {
     showShortcuts (false);
@@ -2098,6 +2139,7 @@ PianoRoll::PianoRoll (CurvableProcessor& p, const Palette& pal)
       velocityLane (std::make_unique<VelocityLane> (*this)),
       shortcutsPanel (std::make_unique<ShortcutsPanel> (*this)),
       namePrompt (std::make_unique<NamePrompt> (*this)),
+      midiButton (std::make_unique<MidiButton> (*this)),
       presetLibrary (p.getHostingContext().getSettings().getFile().getSiblingFile (CurvePresetLibrary::fileName))
 {
     setWantsKeyboardFocus (true);
@@ -2150,6 +2192,10 @@ PianoRoll::PianoRoll (CurvableProcessor& p, const Palette& pal)
     bendButton.setTooltip ("Pitch bend range. Set your synth's bend range to the same value.");
     bendButton.onClick = [this] { showBendRangeMenu(); };
     addAndMakeVisible (bendButton);
+
+    CurvableLookAndFeel::setStyle (*midiButton, "pill");
+    midiButton->setTooltip ("Drag into FL Studio (or any DAW) to export the notes with their bends. Click for more options.");
+    addAndMakeVisible (*midiButton);
 
 
 
@@ -2208,6 +2254,7 @@ void PianoRoll::resized()
     bottom.removeFromLeft (12);
     snapButton.setBounds (bottom.removeFromLeft (124).withSizeKeepingCentre (124, 44));
     bendButton.setBounds (bottom.removeFromLeft (112).withSizeKeepingCentre (112, 44));
+    midiButton->setBounds (bottom.removeFromLeft (84).withSizeKeepingCentre (84, 44));
     helpButton.setBounds (bottom.removeFromRight (44).withSizeKeepingCentre (44, 44));
 
     shortcutsPanel->setBounds (getLocalBounds());
@@ -2247,12 +2294,13 @@ void PianoRoll::paint (juce::Graphics& g)
 
     // 底部工具栏右侧：状态或操作提示
     auto statusArea = getLocalBounds().removeFromBottom (bottomBarHeight)
-                          .withTrimmedLeft (bendButton.getRight() + 12)
+                          .withTrimmedLeft (midiButton->getRight() + 12)
                           .withRight (helpButton.getX() - 8);
     const auto warning = getWarning();
     g.setColour (statusIsError || (statusText.isEmpty() && warning.isNotEmpty()) ? palette.error : palette.muted);
     g.setFont (juce::FontOptions (12.5f));
-    g.drawFittedText (statusText.isNotEmpty() ? statusText : (warning.isNotEmpty() ? warning : getHint()),
+    const auto dropText = midiDropBeat >= 0.0 ? "Drop to add the notes at bar " + juce::String ((int) (midiDropBeat / 4.0) + 1) : juce::String();
+    g.drawFittedText (dropText.isNotEmpty() ? dropText : statusText.isNotEmpty() ? statusText : (warning.isNotEmpty() ? warning : getHint()),
                       statusArea, juce::Justification::centredRight, 1, 0.9f);
 }
 
@@ -2751,6 +2799,266 @@ void PianoRoll::timerCallback()
     playheadBeat = beat;
     strip (playheadBeat, *noteArea);
     strip (playheadBeat, *ruler);
+}
+
+//==============================================================================
+// MIDI 导入导出
+namespace
+{
+    constexpr auto dragLayoutKey = "midiDragLayout";
+
+    juce::File midiTempFolder()
+    {
+        return juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("Curvable MIDI");
+    }
+}
+
+double PianoRoll::dropBeat (int x) const
+{
+    const auto beat = view.xToBeat ((double) (x - noteArea->getX()));
+    return juce::jmax (0.0, std::floor (beat / 4.0) * 4.0);
+}
+
+bool PianoRoll::isInterestedInFileDrag (const juce::StringArray& files)
+{
+    return std::any_of (files.begin(), files.end(), [] (const juce::String& f) { return midi::isMidiFile (juce::File (f)); });
+}
+
+void PianoRoll::fileDragEnter (const juce::StringArray&, int x, int) { fileDragMove ({}, x, 0); }
+
+void PianoRoll::fileDragMove (const juce::StringArray&, int x, int)
+{
+    if (const auto beat = dropBeat (x); beat != midiDropBeat)
+    {
+        midiDropBeat = beat;
+        repaint();
+    }
+}
+
+void PianoRoll::fileDragExit (const juce::StringArray&)
+{
+    midiDropBeat = -1.0;
+    repaint();
+}
+
+void PianoRoll::filesDropped (const juce::StringArray& files, int x, int)
+{
+    midiDropBeat = -1.0;
+    repaint();
+
+    for (const auto& f : files)
+    {
+        if (midi::isMidiFile (juce::File (f)))
+        {
+            importMidiFile (juce::File (f), dropBeat (x));
+            return;
+        }
+    }
+}
+
+void PianoRoll::paintOverChildren (juce::Graphics& g)
+{
+    if (midiDropBeat < 0.0)
+        return;
+
+    // 拖入 MIDI 时：标出音符会从哪里开始
+    const auto area = noteArea->getBounds().toFloat();
+    const auto x = area.getX() + (float) view.beatToX (midiDropBeat);
+
+    g.setColour (palette.accent.withAlpha (0.08f));
+    g.fillRect (area.withLeft (juce::jlimit (area.getX(), area.getRight(), x)));
+    g.setColour (palette.accent);
+    g.fillRect (juce::Rectangle<float> (x - 1.0f, area.getY(), 2.0f, area.getHeight()).getIntersection (area));
+}
+
+void PianoRoll::importMidiFile (const juce::File& file, double atBeat)
+{
+    const auto imported = midi::importMidi (file, project.bendRange);
+
+    if (imported.error.isNotEmpty())
+    {
+        flashMessage (imported.error);
+        return;
+    }
+
+    editing::IdSet added;
+
+    edit ("Import MIDI", [&] (Project& p)
+    {
+        for (const auto& n : imported.notes)
+        {
+            const auto id = p.addNote (n.start + atBeat, n.length, n.pitch, n.velocity);
+            editing::findNote (p, id)->curve = n.curve;
+            added.insert (id);
+        }
+    });
+
+    setSelection (added);
+
+    auto message = "Added " + juce::String ((int) imported.notes.size()) + " notes from " + file.getFileName();
+
+    if (imported.bentNotes > 0)
+        message << " (" << imported.bentNotes << " with pitch bends)";
+
+    flashMessage (message);
+}
+
+void PianoRoll::browseForMidiImport()
+{
+    fileChooser = std::make_unique<juce::FileChooser> ("Add notes from a MIDI file",
+                                                       juce::File::getSpecialLocation (juce::File::userDocumentsDirectory), "*.mid;*.midi");
+    juce::Component::SafePointer<PianoRoll> safeThis (this);
+
+    fileChooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
+                              [safeThis] (const juce::FileChooser& chooser)
+    {
+        auto* self = safeThis.getComponent();
+
+        if (self == nullptr || chooser.getResult() == juce::File())
+            return;
+
+        // 加在内容的后面（空工程从头开始）
+        self->importMidiFile (chooser.getResult(), roundUpToBar (self->project.getContentEnd()));
+    });
+}
+
+midi::Layout PianoRoll::getDragLayout() const
+{
+    return processor.getHostingContext().getSettings().getValue (dragLayoutKey) == "mpe" ? midi::Layout::mpe
+                                                                                         : midi::Layout::channelPerVoice;
+}
+
+juce::String PianoRoll::describeExport (const midi::ExportResult& r, midi::Layout layout)
+{
+    juce::StringArray problems;
+
+    if (r.sharedNotes > 0)
+        problems.add (juce::String (r.sharedNotes) + " notes had to share a channel with a different bend");
+
+    if (r.clippedNotes > 0)
+        problems.add (juce::String (r.clippedNotes) + " notes bend further than "
+                      + (layout == midi::Layout::mpe ? juce::String::fromUTF8 ("\xc2\xb1") + "48" : juce::String ("the bend range")));
+
+    return problems.joinIntoString (", ");
+}
+
+void PianoRoll::dragMidiOut()
+{
+    if (project.notes.empty())
+    {
+        flashMessage ("There are no notes to export yet.");
+        return;
+    }
+
+    const auto layout = getDragLayout();
+    const auto result = midi::exportProject (project, layout, processor.getHostBpm());
+
+    // 旧的临时文件：一天以后清理（宿主可能还在读刚拖出去的文件）
+    auto folder = midiTempFolder();
+    folder.createDirectory();
+
+    for (const auto& old : folder.findChildFiles (juce::File::findFiles, false, "*.mid"))
+        if (old.getLastModificationTime() < juce::Time::getCurrentTime() - juce::RelativeTime::days (1))
+            old.deleteFile();
+
+    // 文件名就是宿主里显示的名字（FL 用它命名 pattern）；被占用时换一个
+    auto file = folder.getChildFile (layout == midi::Layout::mpe ? "Curvable MPE.mid" : "Curvable.mid");
+
+    if (file.exists() && ! file.deleteFile())
+        file = file.getNonexistentSibling();
+
+    juce::FileOutputStream out (file);
+
+    if (! out.openedOk() || ! result.file.writeTo (out))
+    {
+        flashMessage ("Could not write the MIDI file (" + file.getFullPathName() + ")");
+        return;
+    }
+
+    out.flush();
+
+    if (const auto problems = describeExport (result, layout); problems.isNotEmpty())
+        flashMessage ("Exported, but " + problems + ".");
+
+    juce::DragAndDropContainer::performExternalDragDropOfFiles ({ file.getFullPathName() }, false, midiButton.get());
+}
+
+void PianoRoll::saveMidiAs (midi::Layout layout)
+{
+    if (project.notes.empty())
+    {
+        flashMessage ("There are no notes to export yet.");
+        return;
+    }
+
+    const auto name = layout == midi::Layout::mpe ? "Curvable MPE.mid" : "Curvable.mid";
+    fileChooser = std::make_unique<juce::FileChooser> ("Save MIDI file",
+                                                       juce::File::getSpecialLocation (juce::File::userDocumentsDirectory).getChildFile (name),
+                                                       "*.mid");
+    juce::Component::SafePointer<PianoRoll> safeThis (this);
+
+    fileChooser->launchAsync (juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::warnAboutOverwriting,
+                              [safeThis, layout] (const juce::FileChooser& chooser)
+    {
+        auto* self = safeThis.getComponent();
+        auto file = chooser.getResult();
+
+        if (self == nullptr || file == juce::File())
+            return;
+
+        if (! file.hasFileExtension ("mid;midi"))
+            file = file.withFileExtension ("mid");
+
+        const auto result = midi::exportProject (self->project, layout, self->processor.getHostBpm());
+        file.deleteFile();
+        juce::FileOutputStream out (file);
+
+        if (! out.openedOk() || ! result.file.writeTo (out))
+        {
+            self->flashMessage ("Could not write " + file.getFullPathName());
+            return;
+        }
+
+        const auto problems = describeExport (result, layout);
+        self->flashMessage ("Saved " + file.getFileName() + (problems.isNotEmpty() ? " (" + problems + ")" : juce::String()));
+    });
+}
+
+void PianoRoll::showMidiMenu()
+{
+    const auto dragLayout = getDragLayout();
+    enum { importId = 1, saveVoicesId, saveMpeId, dragVoicesId, dragMpeId };
+
+    juce::PopupMenu menu;
+    menu.addSectionHeader ("Drag this button into your DAW to export");
+    menu.addItem (dragVoicesId, "Drag exports one channel per voice", true, dragLayout == midi::Layout::channelPerVoice);
+    menu.addItem (dragMpeId, "Drag exports MPE", true, dragLayout == midi::Layout::mpe);
+    menu.addSeparator();
+    menu.addItem (saveVoicesId, "Save MIDI file (one channel per voice)...", ! project.notes.empty());
+    menu.addItem (saveMpeId, "Save MPE MIDI file...", ! project.notes.empty());
+    menu.addSeparator();
+    menu.addItem (importId, "Add notes from a MIDI file...");
+
+    juce::Component::SafePointer<PianoRoll> safeThis (this);
+    menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (midiButton.get()), [safeThis] (int result)
+    {
+        auto* self = safeThis.getComponent();
+
+        if (self == nullptr || result <= 0)
+            return;
+
+        auto& settings = self->processor.getHostingContext().getSettings();
+
+        switch (result)
+        {
+            case importId:     self->browseForMidiImport(); break;
+            case saveVoicesId: self->saveMidiAs (midi::Layout::channelPerVoice); break;
+            case saveMpeId:    self->saveMidiAs (midi::Layout::mpe); break;
+            case dragVoicesId: settings.setValue (dragLayoutKey, "voices"); break;
+            case dragMpeId:    settings.setValue (dragLayoutKey, "mpe"); break;
+            default: break;
+        }
+    });
 }
 
 } // namespace curvable

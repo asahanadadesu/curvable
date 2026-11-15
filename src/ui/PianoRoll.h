@@ -3,6 +3,7 @@
 #include "model/NoteEditing.h"
 #include "ui/RollView.h"
 #include "model/CurvePresetLibrary.h"
+#include "io/MidiExchange.h"
 #include "ui/Theme.h"
 
 #include <juce_gui_basics/juce_gui_basics.h>
@@ -29,6 +30,7 @@ class CurvableProcessor;
     P / C / S 切换 Draw / Curve / Slice 工具；Esc 取消选择。
 */
 class PianoRoll final : public juce::Component,
+                        public juce::FileDragAndDropTarget,
                         private juce::ChangeListener,
                         private juce::ScrollBar::Listener,
                         private juce::Timer
@@ -41,6 +43,14 @@ public:
     void resized() override;
     bool keyPressed (const juce::KeyPress&) override;
     void mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails&) override;
+    void paintOverChildren (juce::Graphics&) override;
+
+    // 拖入 MIDI 文件导入音符
+    bool isInterestedInFileDrag (const juce::StringArray&) override;
+    void fileDragEnter (const juce::StringArray&, int x, int y) override;
+    void fileDragMove (const juce::StringArray&, int x, int y) override;
+    void fileDragExit (const juce::StringArray&) override;
+    void filesDropped (const juce::StringArray&, int x, int y) override;
 
     /** 配色改变后调用。 */
     void paletteChanged();
@@ -62,6 +72,7 @@ private:
     struct VelocityLane;
     struct ShortcutsPanel;
     struct NamePrompt;
+    struct MidiButton;
 
     void changeListenerCallback (juce::ChangeBroadcaster*) override;
     void timerCallback() override;
@@ -108,6 +119,20 @@ private:
     /** 在底部提示栏显示几秒钟的提醒（例如操作无法完成的原因）。 */
     void flashMessage (const juce::String&);
 
+    // MIDI 导入导出
+    /** 把 MIDI 文件里的音符加到 atBeat（文件开头对齐到这里）。 */
+    void importMidiFile (const juce::File&, double atBeat);
+    void browseForMidiImport();
+    void showMidiMenu();
+    void saveMidiAs (midi::Layout);
+    /** 从 MIDI 按钮拖出：写一个临时文件交给系统拖放（拖到 FL 的 Playlist 或其他程序）。 */
+    void dragMidiOut();
+    midi::Layout getDragLayout() const;
+    /** 导出结果里需要提醒的问题；没有时为空。 */
+    static juce::String describeExport (const midi::ExportResult&, midi::Layout);
+    /** 拖入时对齐到的位置：鼠标所在小节的开头。 */
+    double dropBeat (int x) const;
+
     /** 问一个名字，把这条曲线存成预设（noteLength：音符长度，套用时按比例伸缩）。 */
     void savePreset (const PitchCurve&, double noteLength);
 
@@ -130,6 +155,9 @@ private:
 
     juce::TextButton drawButton { "Draw" }, curveButton { "Curve" }, sliceButton { "Slice" };
     juce::TextButton snapButton, bendButton, helpButton { "?" };
+    std::unique_ptr<MidiButton> midiButton;
+    std::unique_ptr<juce::FileChooser> fileChooser;
+    double midiDropBeat = -1.0; ///< 正在拖入 MIDI 文件时对齐到的位置；没有拖入时为 -1
 
     RollView view;
     bool viewInitialised = false;
