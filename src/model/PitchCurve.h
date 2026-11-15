@@ -1,29 +1,23 @@
 #pragma once
 
+#include <optional>
 #include <vector>
 
 namespace curvable
 {
 
-/** 音高曲线上的一个节点。 */
-struct CurvePoint
-{
-    double time = 0.0;       ///< 相对音符起点的位置（拍）
-    double semitones = 0.0;  ///< 相对音符本身音高的偏移（半音，可带小数）
-    float tension = 0.0f;    ///< 到下一个节点之间的弯曲程度 -1..1（0 = 直线；与 FL 自动化曲线的 tension 类似）
-    bool vibrato = false;    ///< 从这个节点到下一个节点（最后一个节点：到音符结尾）这一段有颤音
+/** 颤音 / trill（与相邻音快速交替）的参数。
 
-    bool operator== (const CurvePoint&) const = default;
-};
-
-/** 颤音 / 颤音式交替（trill）的参数（每个音符一组）。出现在哪里由 PitchCurve 决定：整个音符（wholeNote），
-    或者节点之间标了 vibrato 的那些段。相邻的段连成一段，相位连续。 */
+    两种用法：
+    - 整个音符：PitchCurve::vibrato，wholeNote 为 true 时作用于整个音符；
+    - 按段：每个节点可以带自己的一组参数（CurvePoint::vibrato），作用于从这个节点到下一个节点的一段。
+      相邻、参数完全相同的段连成一段，相位连续；参数不同的段各自起振、各自收尾。 */
 struct Vibrato
 {
     enum class Shape { sine, trill };
 
     Shape shape = Shape::sine; ///< sine：正弦颤音；trill：在本音与相邻音之间交替
-    bool wholeNote = false;    ///< 整个音符都有（不看节点上的标记）
+    bool wholeNote = false;    ///< 只用于 PitchCurve::vibrato：整个音符都有（这时不看节点上的颤音）
     double depth = 0.4;        ///< sine：峰值（半音，≥ 0）；trill：相邻音的音程（半音，可为负 = 下方的音）
     double rate = 5.5;      ///< sync 为 false 时单位是 Hz；为 true 时是每拍的周期数（2 = 八分音符）
     bool sync = false;
@@ -49,6 +43,17 @@ struct Vibrato
     bool operator== (const Vibrato&) const = default;
 };
 
+/** 音高曲线上的一个节点。 */
+struct CurvePoint
+{
+    double time = 0.0;       ///< 相对音符起点的位置（拍）
+    double semitones = 0.0;  ///< 相对音符本身音高的偏移（半音，可带小数）
+    float tension = 0.0f;    ///< 到下一个节点之间的弯曲程度 -1..1（0 = 直线；与 FL 自动化曲线的 tension 类似）
+    std::optional<Vibrato> vibrato; ///< 从这个节点到下一个节点（最后一个节点：到音符结尾）这一段的颤音 / trill；没有时为空
+
+    bool operator== (const CurvePoint&) const = default;
+};
+
 /** 一个音符的音高曲线：主曲线（节点）+ 叠加的颤音。
 
     - 没有节点：主曲线不弯（偏移恒为 0）。
@@ -66,7 +71,11 @@ struct PitchCurve
     struct Run
     {
         double start = 0.0, end = 0.0;
+        Vibrato settings;   ///< 这一段的参数
+        int firstPoint = -1, lastPoint = -1; ///< 组成这一段的节点（起点节点的下标）；整个音符的颤音为 -1
+
         double length() const noexcept { return end - start; }
+        bool isWholeNote() const noexcept { return firstPoint < 0; }
     };
 
     /** 完全不弯（主曲线全为 0，也没有颤音）。 */
@@ -78,8 +87,14 @@ struct PitchCurve
     /** 有没有颤音（整个音符，或者至少一段）。 */
     bool hasVibrato() const noexcept;
 
-    /** 有没有节点标了颤音。 */
+    /** 有没有节点带颤音。 */
     bool hasSegmentVibrato() const noexcept;
+
+    /** 有没有某种形状的颤音（整个音符或任意一段）。 */
+    bool hasVibratoShape (Vibrato::Shape) const noexcept;
+
+    /** 所有生效的颤音里，最短的一个周期（拍）；没有颤音时为 0。不分配内存（界面每个像素都会调用）。 */
+    double minBeatsPerCycle (double secondsPerBeat) const noexcept;
 
     /** 主曲线在 time（相对音符起点，拍）处的偏移（半音），不含颤音。 */
     double evaluate (double time) const noexcept;
@@ -105,7 +120,7 @@ struct PitchCurve
     /** [0, length] 内偏移的最大绝对值（含颤音深度，用于检查是否超出弯音范围）。 */
     double getMaxAbsOffset (double length) const noexcept;
 
-    /** 排序、去掉非有限值、把 tension 夹在 -1..1，颤音参数夹在合理范围内。 */
+    /** 排序、去掉非有限值、把 tension 夹在 -1..1，颤音参数夹在合理范围内（节点上的参数 wholeNote 一律为 false）。 */
     void normalise();
 
     /** 0..1 之间的弯曲形状：tension = 0 为直线，> 0 先慢后快，< 0 先快后慢。 */

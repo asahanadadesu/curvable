@@ -122,18 +122,19 @@ TEST_CASE ("slicing keeps vibrato segments and settings on both sides", "[slice]
     Project p;
     const auto id = p.addNote (0.0, 4.0, 60, 0.8f);
     auto& c = findNote (p, id)->curve;
-    c.points = { { 0.0, 0.0 }, { 1.0, 0.0, 0.0f, true } };
-    c.vibrato.depth = 0.7;
+    Vibrato v;
+    v.depth = 0.7;
+    c.points = { { 0.0, 0.0 }, { 1.0, 0.0, 0.0f, v } };
 
     const auto added = sliceNotes (p, { id }, 2.0);
     const auto& left = findNote (p, id)->curve;
     const auto& right = findNote (p, *added.begin())->curve;
 
-    CHECK (left.vibrato.depth == 0.7);
-    CHECK (right.vibrato.depth == 0.7);
     REQUIRE (left.getVibratoRuns (2.0).size() == 1);
+    CHECK (left.getVibratoRuns (2.0)[0].settings.depth == 0.7);
     CHECK_THAT (left.getVibratoRuns (2.0)[0].start, WithinAbs (1.0, 1e-12));
     REQUIRE (right.getVibratoRuns (2.0).size() == 1);
+    CHECK (right.getVibratoRuns (2.0)[0].settings.depth == 0.7);
     CHECK_THAT (right.getVibratoRuns (2.0)[0].start, WithinAbs (0.0, 1e-12)); // 后半段从头就有颤音
 }
 

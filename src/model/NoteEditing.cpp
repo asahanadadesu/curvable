@@ -230,26 +230,22 @@ GlideResult glideNotes (Project& p, const IdSet& ids, double glideBeats)
         const auto a = regionStart[i], b = regionEnd[i];
         const auto localEnd = b - a;
 
-        // 颤音参数取第一个有颤音的音符的
-        if (c.hasVibrato() && ! merged.hasVibrato())
-        {
-            const auto keepWhole = merged.vibrato.wholeNote;
-            merged.vibrato = c.vibrato;
-            merged.vibrato.wholeNote = keepWhole;
-        }
-
-        // 这一段在本音符自己曲线里的某个时刻：弯曲程度和颤音
+        // 这一段在本音符自己曲线里的某个时刻：弯曲程度和颤音（整个音符的颤音换成每一段各带一份参数）
         auto segmentTension = [&] (double t) { const auto s = c.segmentAt (t); return s >= 0 ? c.points[(size_t) s].tension : 0.0f; };
-        auto segmentVibrato = [&] (double t)
+        auto segmentVibrato = [&] (double t) -> std::optional<Vibrato>
         {
             if (c.vibrato.wholeNote)
-                return true;
+            {
+                auto v = c.vibrato;
+                v.wholeNote = false;
+                return v;
+            }
 
             const auto s = c.segmentAt (t);
-            return s >= 0 && c.points[(size_t) s].vibrato;
+            return s >= 0 ? c.points[(size_t) s].vibrato : std::nullopt;
         };
 
-        auto add = [&] (double t, float tension, bool vibrato)
+        auto add = [&] (double t, float tension, std::optional<Vibrato> vibrato)
         {
             merged.points.push_back ({ a + t, c.evaluate (t) + offset, tension, vibrato });
         };
@@ -265,7 +261,7 @@ GlideResult glideNotes (Project& p, const IdSet& ids, double glideBeats)
                 add (point.time, point.tension, segmentVibrato (point.time));
 
         if (! isLast)
-            add (localEnd, 0.0f, false); // 滑音段：直线、没有颤音
+            add (localEnd, 0.0f, std::nullopt); // 滑音段：直线、没有颤音
     }
 
     merged.normalise();
@@ -505,10 +501,10 @@ std::pair<PitchCurve, PitchCurve> splitCurve (const PitchCurve& c, double cut)
         left.points.push_back (point);
     }
 
-    left.points.push_back ({ cut, value, 0.0f, false });
+    left.points.push_back ({ cut, value, 0.0f, std::nullopt });
 
     // 后半段：起点上的节点（沿用被切开那一段剩下的部分）+ 切点之后的节点
-    CurvePoint first { 0.0, value, 0.0f, false };
+    CurvePoint first { 0.0, value, 0.0f, std::nullopt };
 
     if (seg >= 0)
     {
@@ -634,7 +630,7 @@ int insertCurvePoint (PitchCurve& curve, double time, double semitones)
 
     // 插在一段中间时，两边都沿用这一段的弯曲程度和颤音
     const auto tension = it != curve.points.begin() ? std::prev (it)->tension : 0.0f;
-    const auto vibrato = it != curve.points.begin() && std::prev (it)->vibrato;
+    const auto vibrato = it != curve.points.begin() ? std::prev (it)->vibrato : std::nullopt;
     const auto inserted = curve.points.insert (it, { time, semitones, tension, vibrato });
     return (int) std::distance (curve.points.begin(), inserted);
 }
@@ -678,7 +674,7 @@ namespace
     {
         // end 之后这一段原来的弯曲程度和颤音
         float tensionAfter = 0.0f;
-        bool vibratoAfter = false;
+        std::optional<Vibrato> vibratoAfter;
         for (const auto& p : c.points)
         {
             if (p.time <= end + 1.0e-9)
@@ -756,34 +752,116 @@ void applyShape (PitchCurve& c, Shape shape, double length, double bendRange)
 }
 
 //==============================================================================
-void setSegmentVibrato (PitchCurve& c, int segment, bool on)
+namespace
+{
+    /** 这个音符上某种形状的颤音参数：优先 preferred 附近的段，其次任意一段、整个音符的参数，否则默认值。 */
+    Vibrato vibratoFor (const PitchCurve& c, int preferred, Vibrato::Shape shape)
+    {
+        auto matches = [&] (int i)
+        {
+            return i >= 0 && i < (int) c.points.size() && c.points[(size_t) i].vibrato && c.points[(size_t) i].vibrato->shape == shape;
+        };
+
+        std::optional<Vibrato> found;
+
+        if (matches (preferred - 1))
+            found = c.points[(size_t) preferred - 1].vibrato;
+        else if (matches (preferred + 1))
+            found = c.points[(size_t) preferred + 1].vibrato;
+        else
+            for (int i = 0; i < (int) c.points.size() && ! found; ++i)
+                if (matches (i))
+                    found = c.points[(size_t) i].vibrato;
+
+        Vibrato v;
+
+        if (found)
+            v = *found;
+        else if (c.vibrato.shape == shape)
+            v = c.vibrato; // 整个音符的参数（去掉后仍保留着）
+        else
+            v.setShape (shape);
+
+        v.wholeNote = false;
+        return v;
+    }
+}
+
+void setSegmentVibrato (PitchCurve& c, int segment, std::optional<Vibrato::Shape> shape)
 {
     if (segment < 0 || segment >= (int) c.points.size())
         return;
 
-    // 整个音符的颤音换成按段：先把所有段都标上，再改这一段
+    // 整个音符的颤音换成按段：每一段都带上这份参数，再改这一段
     if (c.vibrato.wholeNote)
     {
+        auto v = c.vibrato;
+        v.wholeNote = false;
         c.vibrato.wholeNote = false;
 
         for (auto& p : c.points)
-            p.vibrato = true;
+            p.vibrato = v;
     }
 
-    c.points[(size_t) segment].vibrato = on;
+    auto& target = c.points[(size_t) segment].vibrato;
+
+    if (! shape)
+        target.reset();
+    else if (! target || target->shape != *shape)
+        target = vibratoFor (c, segment, *shape);
 }
 
-void setWholeNoteVibrato (PitchCurve& c, bool on)
+void setWholeNoteVibrato (PitchCurve& c, std::optional<Vibrato::Shape> shape)
 {
-    c.vibrato.wholeNote = on;
+    if (shape)
+    {
+        c.vibrato = vibratoFor (c, -1, *shape);
+        c.vibrato.wholeNote = true;
+    }
+    else
+    {
+        c.vibrato.wholeNote = false;
+    }
 
     for (auto& p : c.points)
-        p.vibrato = false;
+        p.vibrato.reset();
 }
 
 void removeVibrato (PitchCurve& c)
 {
-    setWholeNoteVibrato (c, false);
+    setWholeNoteVibrato (c, std::nullopt);
+}
+
+void setRunVibrato (PitchCurve& c, const PitchCurve::Run& run, const Vibrato& settings)
+{
+    if (run.isWholeNote())
+    {
+        c.vibrato = settings;
+        c.vibrato.wholeNote = true;
+        c.vibrato.normalise();
+        return;
+    }
+
+    auto v = settings;
+    v.wholeNote = false;
+    v.normalise();
+
+    for (int i = std::max (0, run.firstPoint); i <= run.lastPoint && i < (int) c.points.size(); ++i)
+        if (c.points[(size_t) i].vibrato)
+            c.points[(size_t) i].vibrato = v;
+}
+
+void forEachVibrato (PitchCurve& c, const std::function<void (Vibrato&)>& change)
+{
+    if (c.vibrato.wholeNote)
+    {
+        change (c.vibrato);
+        return;
+    }
+
+    for (auto& p : c.points)
+        if (p.vibrato)
+            change (*p.vibrato);
 }
 
 void applyPreset (PitchCurve& target, const PitchCurve& preset, double presetLength, double noteLength)

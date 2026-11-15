@@ -92,6 +92,39 @@ juce::ValueTree ProjectSerializer::toValueTree (const Project& project)
     return tree;
 }
 
+namespace
+{
+    juce::ValueTree vibratoToTree (const Vibrato& v, bool includeWholeNote)
+    {
+        juce::ValueTree vib (ids::vibrato);
+
+        if (v.shape == Vibrato::Shape::trill)
+            vib.setProperty (ids::shape, "trill", nullptr);
+
+        if (includeWholeNote)
+            vib.setProperty (ids::wholeNote, v.wholeNote, nullptr);
+
+        vib.setProperty (ids::depth, v.depth, nullptr);
+        vib.setProperty (ids::rate, v.rate, nullptr);
+        vib.setProperty (ids::sync, v.sync, nullptr);
+        vib.setProperty (ids::fade, v.fade, nullptr);
+        return vib;
+    }
+
+    Vibrato vibratoFromTree (const juce::ValueTree& vib)
+    {
+        const Vibrato defaults;
+        Vibrato v;
+        v.shape     = vib.getProperty (ids::shape).toString() == "trill" ? Vibrato::Shape::trill : Vibrato::Shape::sine;
+        v.wholeNote = vib.getProperty (ids::wholeNote, false);
+        v.depth     = vib.getProperty (ids::depth, defaults.depth);
+        v.rate      = vib.getProperty (ids::rate, defaults.rate);
+        v.sync      = vib.getProperty (ids::sync, false);
+        v.fade      = vib.getProperty (ids::fade, defaults.fade);
+        return v;
+    }
+}
+
 void ProjectSerializer::writeCurve (const PitchCurve& curve, juce::ValueTree& parent)
 {
     for (const auto& p : curve.points)
@@ -103,50 +136,46 @@ void ProjectSerializer::writeCurve (const PitchCurve& curve, juce::ValueTree& pa
         if (p.tension != 0.0f)
             point.setProperty (ids::tension, p.tension, nullptr);
 
+        // 这一段自己的颤音参数
         if (p.vibrato)
-            point.setProperty (ids::vib, true, nullptr);
+            point.appendChild (vibratoToTree (*p.vibrato, false), nullptr);
 
         parent.appendChild (point, nullptr);
     }
 
-    // 颤音参数在去掉颤音后也保存（再次加上时沿用）；从没改过的默认值不保存
+    // 整个音符的颤音参数在去掉颤音后也保存（再次加上时沿用）；从没改过的默认值不保存
     if (const auto& v = curve.vibrato; ! (v == Vibrato {}))
-    {
-        juce::ValueTree vib (ids::vibrato);
-
-        if (v.shape == Vibrato::Shape::trill)
-            vib.setProperty (ids::shape, "trill", nullptr);
-
-        vib.setProperty (ids::wholeNote, v.wholeNote, nullptr);
-        vib.setProperty (ids::depth, v.depth, nullptr);
-        vib.setProperty (ids::rate, v.rate, nullptr);
-        vib.setProperty (ids::sync, v.sync, nullptr);
-        vib.setProperty (ids::fade, v.fade, nullptr);
-        parent.appendChild (vib, nullptr);
-    }
+        parent.appendChild (vibratoToTree (v, true), nullptr);
 }
 
 PitchCurve ProjectSerializer::readCurve (const juce::ValueTree& parent)
 {
     PitchCurve curve;
 
-    for (const auto& pointTree : parent)
-        if (pointTree.hasType (ids::point))
-            curve.points.push_back ({ (double) pointTree.getProperty (ids::time, 0.0),
-                                      (double) pointTree.getProperty (ids::offset, 0.0),
-                                      (float) (double) pointTree.getProperty (ids::tension, 0.0),
-                                      (bool) pointTree.getProperty (ids::vib, false) });
-
     if (const auto vib = parent.getChildWithName (ids::vibrato); vib.isValid())
+        curve.vibrato = vibratoFromTree (vib);
+
+    for (const auto& pointTree : parent)
     {
-        const Vibrato defaults;
-        auto& v = curve.vibrato;
-        v.shape     = vib.getProperty (ids::shape).toString() == "trill" ? Vibrato::Shape::trill : Vibrato::Shape::sine;
-        v.wholeNote = vib.getProperty (ids::wholeNote, false);
-        v.depth     = vib.getProperty (ids::depth, defaults.depth);
-        v.rate      = vib.getProperty (ids::rate, defaults.rate);
-        v.sync      = vib.getProperty (ids::sync, false);
-        v.fade      = vib.getProperty (ids::fade, defaults.fade);
+        if (! pointTree.hasType (ids::point))
+            continue;
+
+        CurvePoint point { (double) pointTree.getProperty (ids::time, 0.0),
+                           (double) pointTree.getProperty (ids::offset, 0.0),
+                           (float) (double) pointTree.getProperty (ids::tension, 0.0),
+                           std::nullopt };
+
+        if (const auto vib = pointTree.getChildWithName (ids::vibrato); vib.isValid())
+        {
+            point.vibrato = vibratoFromTree (vib);
+        }
+        else if ((bool) pointTree.getProperty (ids::vib, false))
+        {
+            // 早期的格式：节点只有一个标记，参数用整个音符的那一组
+            point.vibrato = curve.vibrato;
+        }
+
+        curve.points.push_back (point);
     }
 
     curve.normalise();

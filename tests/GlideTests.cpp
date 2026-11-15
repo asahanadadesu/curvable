@@ -156,11 +156,11 @@ TEST_CASE ("vibrato becomes segment vibrato in each note's own part", "[glide]")
     const auto& c = p.notes.front().curve;
 
     CHECK_FALSE (c.vibrato.wholeNote);
-    CHECK (c.vibrato.depth == 0.6);  // 参数沿用有颤音的音符
-    CHECK (c.vibrato.rate == 7.0);
 
     const auto runs = c.getVibratoRuns (3.0);
     REQUIRE (runs.size() == 1);
+    CHECK (runs[0].settings.depth == 0.6); // 参数跟着那个音符走
+    CHECK (runs[0].settings.rate == 7.0);
     CHECK_THAT (runs[0].start, WithinAbs (1.0, 1e-12)); // 只在第二个音符那一段，不在第一个音符和滑音上
     CHECK_THAT (runs[0].end, WithinAbs (3.0, 1e-12));
 }

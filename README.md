@@ -11,7 +11,7 @@ Curvable is designed for FL Studio on Windows, whose piano roll cannot bend the 
 ## Features
 
 - **Per-note pitch curves.** Add points, drag them to any pitch, and shape each segment from straight to strongly curved. Points snap to semitones and the grid; hold Alt for free movement.
-- **Vibrato and trill.** Apply them to the whole note or only to chosen segments. Set depth, speed and fade-in with handles on the note. Speed can be in Hz or locked to the tempo.
+- **Vibrato and trill.** Apply them to the whole note or to chosen segments, each with its own settings. Set depth, speed and fade-in with handles on the note. Speed can be in Hz or locked to the tempo.
 - **Ready-made bends.** Scoop, overshoot, bend and release, fall and doit, from the right-click menu.
 - **Curve presets.** Save a curve and apply it to any number of notes in any project. It stretches to each note's length.
 - **Glide.** Merge a line of notes into one legato note that slides between the pitches. Glide between chords, voice by voice.

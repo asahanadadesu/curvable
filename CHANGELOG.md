@@ -10,7 +10,7 @@ First public release.
 
 - Piano roll with Draw, Curve and Slice tools, snapping, velocity lane, undo and redo, copy and paste, and keyboard shortcuts.
 - A pitch curve for every note, with adjustable curve shape between points.
-- Vibrato and trill on the whole note or on selected segments, with on-note handles for depth, speed and fade-in. Speed in Hz or locked to the tempo.
+- Vibrato and trill on the whole note or on selected segments, each segment with its own settings, edited with on-note handles for depth, speed and fade-in. Speed in Hz or locked to the tempo.
 - Ready-made bends: scoop, overshoot, bend and release, fall and doit.
 - Curve presets shared across projects, stretched to each note's length.
 - Glide: merge a line of notes into one legato note, or glide between chords voice by voice.

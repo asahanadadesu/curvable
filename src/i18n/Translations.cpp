@@ -46,6 +46,7 @@ namespace
         { { "Lock speed to tempo", "速度跟随曲速", "速さをテンポに同期", "속도를 템포에 동기화", "Sincronizar velocidad con el tempo" } },
         { { "Remove trill", "去掉 Trill", "トリルを削除", "트릴 제거", "Quitar trino" } },
         { { "Remove vibrato", "去掉颤音", "ビブラートを削除", "비브라토 제거", "Quitar vibrato" } },
+        { { "Remove vibrato and trill", "去掉颤音和 Trill", "ビブラートとトリルを削除", "비브라토와 트릴 제거", "Quitar vibrato y trino" } },
         { { "Bend", "弯音", "ベンド", "벤드", "Bend" } },
         { { "Scoop (slide in from below)", "下方滑入（Scoop）", "スクープ（下からしゃくり上げ）", "스쿱 (아래에서 끌어올리기)", "Scoop (entrada desde abajo)" } },
         { { "Overshoot (go past, settle back)", "越过回落（Overshoot）", "オーバーシュート（行き過ぎて戻る）", "오버슈트 (지나쳤다 돌아오기)", "Overshoot (pasarse y volver)" } },

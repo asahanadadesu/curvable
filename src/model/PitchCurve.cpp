@@ -102,6 +102,11 @@ bool PitchCurve::pointsFlat() const noexcept
     return true;
 }
 
+namespace
+{
+    bool isAudible (const Vibrato& v) noexcept { return v.depth != 0.0 && v.rate > 0.0; }
+}
+
 bool PitchCurve::hasSegmentVibrato() const noexcept
 {
     for (const auto& p : points)
@@ -113,7 +118,41 @@ bool PitchCurve::hasSegmentVibrato() const noexcept
 
 bool PitchCurve::hasVibrato() const noexcept
 {
-    return vibrato.depth != 0.0 && vibrato.rate > 0.0 && (vibrato.wholeNote || hasSegmentVibrato());
+    if (vibrato.wholeNote)
+        return isAudible (vibrato);
+
+    for (const auto& p : points)
+        if (p.vibrato && isAudible (*p.vibrato))
+            return true;
+
+    return false;
+}
+
+bool PitchCurve::hasVibratoShape (Vibrato::Shape shape) const noexcept
+{
+    if (vibrato.wholeNote)
+        return vibrato.shape == shape;
+
+    for (const auto& p : points)
+        if (p.vibrato && p.vibrato->shape == shape)
+            return true;
+
+    return false;
+}
+
+double PitchCurve::minBeatsPerCycle (double secondsPerBeat) const noexcept
+{
+    if (vibrato.wholeNote)
+        return isAudible (vibrato) ? vibrato.beatsPerCycle (secondsPerBeat) : 0.0;
+
+    double result = 0.0;
+
+    for (const auto& p : points)
+        if (p.vibrato && isAudible (*p.vibrato))
+            if (const auto bpc = p.vibrato->beatsPerCycle (secondsPerBeat); result == 0.0 || bpc < result)
+                result = bpc;
+
+    return result;
 }
 
 bool PitchCurve::isFlat() const noexcept
@@ -133,94 +172,78 @@ int PitchCurve::segmentAt (double time) const noexcept
 }
 
 //==============================================================================
-bool PitchCurve::findVibratoRun (double time, double length, Run& run) const noexcept
+template <typename Callback>
+static void forEachRun (const PitchCurve& c, double length, Callback&& callback) noexcept
 {
-    if (vibrato.depth == 0.0 || vibrato.rate <= 0.0)
-        return false;
-
-    if (vibrato.wholeNote)
+    // 回调返回 true 时停止
+    if (c.vibrato.wholeNote)
     {
-        run = { 0.0, length };
-        return time >= 0.0 && time < length;
+        if (isAudible (c.vibrato) && length > 0.0)
+        {
+            PitchCurve::Run run { 0.0, length, c.vibrato, -1, -1 };
+            callback (run);
+        }
+        return;
     }
 
-    // 把相邻的颤音段连起来，看 time 落在哪一段里
+    // 相邻、参数相同的段连成一段
     bool inRun = false;
-    Run current;
+    PitchCurve::Run current;
+    const auto& points = c.points;
 
     for (std::size_t i = 0; i < points.size(); ++i)
     {
         const auto segStart = std::min (points[i].time, length);
         const auto segEnd = std::min (i + 1 < points.size() ? points[i + 1].time : length, length);
+        const auto& v = points[i].vibrato;
+        const auto active = v.has_value() && isAudible (*v) && segEnd > segStart;
 
-        if (points[i].vibrato && segEnd > segStart)
+        if (inRun && (! active || ! (*v == current.settings)))
         {
-            if (! inRun)
-            {
-                inRun = true;
-                current.start = segStart;
-            }
-
-            current.end = segEnd;
-            continue;
-        }
-
-        if (inRun)
-        {
-            if (time >= current.start && time < current.end)
-            {
-                run = current;
-                return true;
-            }
-
             inRun = false;
+            if (callback (current))
+                return;
         }
+
+        if (! active)
+            continue;
+
+        if (! inRun)
+        {
+            inRun = true;
+            current = { segStart, segEnd, *v, (int) i, (int) i };
+        }
+
+        current.end = segEnd;
+        current.lastPoint = (int) i;
     }
 
-    if (inRun && time >= current.start && time < current.end)
+    if (inRun)
+        callback (current);
+}
+
+bool PitchCurve::findVibratoRun (double time, double length, Run& run) const noexcept
+{
+    bool found = false;
+
+    forEachRun (*this, length, [&] (const Run& r)
     {
-        run = current;
-        return true;
-    }
+        if (time >= r.start && time < r.end)
+        {
+            run = r;
+            found = true;
+        }
 
-    return false;
+        return found;
+    });
+
+    return found;
 }
 
 std::vector<PitchCurve::Run> PitchCurve::getVibratoRuns (double length) const
 {
     std::vector<Run> runs;
-
-    if (vibrato.depth == 0.0 || vibrato.rate <= 0.0)
-        return runs;
-
-    if (vibrato.wholeNote)
-    {
-        if (length > 0.0)
-            runs.push_back ({ 0.0, length });
-        return runs;
-    }
-
-    bool inRun = false;
-
-    for (std::size_t i = 0; i < points.size(); ++i)
-    {
-        const auto segStart = std::min (points[i].time, length);
-        const auto segEnd = std::min (i + 1 < points.size() ? points[i + 1].time : length, length);
-
-        if (points[i].vibrato && segEnd > segStart)
-        {
-            if (! inRun)
-                runs.push_back ({ segStart, segEnd });
-
-            runs.back().end = segEnd;
-            inRun = true;
-        }
-        else
-        {
-            inRun = false;
-        }
-    }
-
+    forEachRun (*this, length, [&] (const Run& r) { runs.push_back (r); return false; });
     return runs;
 }
 
@@ -231,7 +254,7 @@ double PitchCurve::vibratoAt (double time, double length, double secondsPerBeat)
     if (! findVibratoRun (time, length, run))
         return 0.0;
 
-    return vibrato.evaluate (time - run.start, run.length(), secondsPerBeat);
+    return run.settings.evaluate (time - run.start, run.length(), secondsPerBeat);
 }
 
 //==============================================================================
@@ -287,11 +310,11 @@ double PitchCurve::getMaxAbsOffset (double length) const noexcept
         if (p.time >= 0.0 && p.time <= length)
             result = std::max (result, std::abs (p.semitones));
 
-    // 颤音：保守地直接加上深度（trill 的音程可能为负）
-    if (! getVibratoRuns (length).empty())
-        result += std::abs (vibrato.depth);
+    // 颤音：保守地直接加上最大的深度（trill 的音程可能为负）
+    double depth = 0.0;
+    forEachRun (*this, length, [&] (const Run& r) { depth = std::max (depth, std::abs (r.settings.depth)); return false; });
 
-    return result;
+    return result + depth;
 }
 
 void PitchCurve::normalise()
@@ -302,6 +325,12 @@ void PitchCurve::normalise()
     {
         p.time = std::max (0.0, p.time);
         p.tension = std::isfinite (p.tension) ? std::clamp (p.tension, -1.0f, 1.0f) : 0.0f;
+
+        if (p.vibrato)
+        {
+            p.vibrato->wholeNote = false;
+            p.vibrato->normalise();
+        }
     }
 
     std::stable_sort (points.begin(), points.end(), [] (const CurvePoint& a, const CurvePoint& b) { return a.time < b.time; });

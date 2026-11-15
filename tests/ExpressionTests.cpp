@@ -64,7 +64,7 @@ TEST_CASE ("segment vibrato follows the curve points and joins neighbouring segm
     CHECK_FALSE (c.hasVibrato());
 
     // 只给 [1, 2) 加颤音
-    editing::setSegmentVibrato (c, 1, true);
+    editing::setSegmentVibrato (c, 1, Vibrato::Shape::sine);
     CHECK (c.hasVibrato());
     CHECK (c.vibratoAt (0.5, 4.0, 0.5) == 0.0);
     CHECK (c.vibratoAt (2.5, 4.0, 0.5) == 0.0);
@@ -76,8 +76,8 @@ TEST_CASE ("segment vibrato follows the curve points and joins neighbouring segm
     CHECK (runs[0].end == 2.0);
 
     // 相邻的段连成一段；最后一个节点的段一直到音符结尾
-    editing::setSegmentVibrato (c, 2, true);
-    editing::setSegmentVibrato (c, 3, true);
+    editing::setSegmentVibrato (c, 2, Vibrato::Shape::sine);
+    editing::setSegmentVibrato (c, 3, Vibrato::Shape::sine);
     runs = c.getVibratoRuns (4.0);
     REQUIRE (runs.size() == 1);
     CHECK (runs[0].start == 1.0);
@@ -94,7 +94,7 @@ TEST_CASE ("segment vibrato follows the curve points and joins neighbouring segm
     CHECK (c.points[2].vibrato);
 
     // 去掉中间一段，分成两段
-    editing::setSegmentVibrato (c, 2, false);
+    editing::setSegmentVibrato (c, 2, std::nullopt);
     CHECK (c.getVibratoRuns (4.0).size() == 2);
 }
 
@@ -102,27 +102,27 @@ TEST_CASE ("whole-note vibrato replaces segment marks and the other way round", 
 {
     PitchCurve c;
     c.points = { { 0.0, 0.0 }, { 1.0, 0.0 } };
-    editing::setSegmentVibrato (c, 0, true);
+    editing::setSegmentVibrato (c, 0, Vibrato::Shape::sine);
     CHECK (c.hasVibrato());
     CHECK (c.points.size() == 2); // 只有颤音标记的节点不会被当成"不弯"而清掉
 
-    editing::setWholeNoteVibrato (c, true);
+    editing::setWholeNoteVibrato (c, Vibrato::Shape::sine);
     CHECK (c.vibrato.wholeNote);
     CHECK_FALSE (c.hasSegmentVibrato());
     CHECK (c.points.size() == 2); // 节点保留（即使不弯）
 
     // 去掉颤音后音符变平，节点也保留
-    editing::setWholeNoteVibrato (c, false);
-    editing::setSegmentVibrato (c, 0, true);
-    editing::setSegmentVibrato (c, 0, false);
+    editing::setWholeNoteVibrato (c, std::nullopt);
+    editing::setSegmentVibrato (c, 0, Vibrato::Shape::sine);
+    editing::setSegmentVibrato (c, 0, std::nullopt);
     CHECK (c.isFlat());
     CHECK (c.points.size() == 2);
 
     // 整个音符 → 按段：所有段都标上，再去掉这一段
     PitchCurve d;
     d.points = { { 0.0, 0.0 }, { 1.0, 1.0 }, { 2.0, 0.0 } };
-    editing::setWholeNoteVibrato (d, true);
-    editing::setSegmentVibrato (d, 1, false);
+    editing::setWholeNoteVibrato (d, Vibrato::Shape::sine);
+    editing::setSegmentVibrato (d, 1, std::nullopt);
     CHECK_FALSE (d.vibrato.wholeNote);
     CHECK (d.points[0].vibrato);
     CHECK_FALSE (d.points[1].vibrato);
@@ -153,8 +153,8 @@ TEST_CASE ("a note with only vibrato bends, gets its own voice and is saved", "[
 
     // 按段的颤音也能保存
     auto& curve = editing::findNote (p, shaky)->curve;
-    curve.points = { { 0.0, 0.0 }, { 1.0, 1.0, 0.0f, true } };
     curve.vibrato.wholeNote = false;
+    curve.points = { { 0.0, 0.0 }, { 1.0, 1.0, 0.0f, makeVibrato (0.7, 3.0, true, 0.0, false) } };
     const auto restoredSegments = ProjectSerializer::fromValueTree (ProjectSerializer::toValueTree (p));
     CHECK (editing::findNote (*restoredSegments, shaky)->curve == curve);
 }

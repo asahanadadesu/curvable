@@ -119,12 +119,12 @@ Right-click a note with the Curve tool:
 
 - **Vibrato on this segment** adds vibrato between the two points around the click. **Vibrato on whole note** applies it to the whole note.
 - **Trill on this segment** and **Trill on whole note** alternate rapidly between the note and a neighbouring pitch.
-- **Lock speed to tempo** switches the speed between Hz and note values.
-- **Remove vibrato** (or **Remove trill**) removes it from the note. Its settings are kept for next time.
+- **Lock speed to tempo** switches the speed between Hz and note values. Right-click inside a vibrato or trill to change only that one.
+- **Remove vibrato** (or **Remove trill**) removes all vibrato and trills from the note.
 
-A note has one kind at a time. Choosing trill on a note with vibrato turns its other vibrato segments into trill as well.
+Every segment has its own settings, so one note can have, for example, a slow vibrato on one segment and a trill on the next. When you add vibrato or a trill to a segment next to one of the same kind, it takes over that segment's settings and the two play as one continuous vibrato. Segments with different settings start and fade out separately. Choosing the same item again removes it from the segment.
 
-Adjust the settings on the note itself, with the Curve tool (or the Draw tool when the note is selected):
+Adjust the settings on the note itself, with the Curve tool (or the Draw tool when the note is selected). Each vibrato or trill has its own handles:
 
 - **Diamond handle.** Drag up or down to change the depth. For a trill, this sets the neighbouring pitch in semitones; drag below the note for a lower neighbour. Drag left or right to change the speed. The first drag direction is kept until you release the mouse.
 - **Bar below the note** (vibrato only). Drag it to set how long the vibrato takes to fade in.

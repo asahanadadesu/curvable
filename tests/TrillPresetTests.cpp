@@ -104,8 +104,7 @@ TEST_CASE ("trill on segments only plays there", "[trill]")
 {
     PitchCurve c;
     c.points = { { 0.0, 0.0 }, { 1.0, 0.0 }, { 2.0, 0.0 } };
-    c.vibrato.setShape (Vibrato::Shape::trill);
-    setSegmentVibrato (c, 1, true);
+    setSegmentVibrato (c, 1, Vibrato::Shape::trill);
 
     CHECK (c.hasVibrato());
     CHECK_THAT (c.vibratoAt (0.7, 3.0, 0.5), WithinAbs (0.0, 1e-12));
@@ -139,9 +138,10 @@ TEST_CASE ("trill settings survive saving", "[trill][serializer]")
 TEST_CASE ("presets stretch to the note length but keep the vibrato speed", "[presets]")
 {
     PitchCurve preset;
-    preset.points = { { 0.0, -2.0, 0.5f }, { 0.5, 0.0 }, { 1.5, 0.0, 0.0f, true } };
-    preset.vibrato.depth = 0.6;
-    preset.vibrato.rate = 6.0;
+    Vibrato v;
+    v.depth = 0.6;
+    v.rate = 6.0;
+    preset.points = { { 0.0, -2.0, 0.5f }, { 0.5, 0.0 }, { 1.5, 0.0, 0.0f, v } };
 
     PitchCurve target;
     target.points = { { 0.0, 5.0 } };
@@ -152,8 +152,8 @@ TEST_CASE ("presets stretch to the note length but keep the vibrato speed", "[pr
     CHECK (target.points[1].time == 1.0);
     CHECK (target.points[2].time == 3.0);
     CHECK (target.points[0].tension == 0.5f);
-    CHECK (target.points[2].vibrato);
-    CHECK (target.vibrato.rate == 6.0);
+    REQUIRE (target.points[2].vibrato);
+    CHECK (target.points[2].vibrato->rate == 6.0);
     CHECK_THAT (target.evaluate (0.0), WithinAbs (-2.0, 1e-12));
     CHECK_THAT (target.evaluate (1.0), WithinAbs (preset.evaluate (0.5), 1e-12));
 
@@ -219,4 +219,142 @@ TEST_CASE ("trill speed snaps to the length of each alternation", "[trill]")
     CHECK (v.rate == 8.0); // Hz
     setVibratoSync (v, true, 0.5);
     CHECK (v.rate == 4.0);
+}
+
+//==============================================================================
+TEST_CASE ("each segment keeps its own vibrato or trill settings", "[vibrato][segments]")
+{
+    PitchCurve c;
+    c.points = { { 0.0, 0.0 }, { 1.0, 0.0 }, { 2.0, 0.0 }, { 3.0, 0.0 } };
+
+    setSegmentVibrato (c, 0, Vibrato::Shape::sine);
+    setSegmentVibrato (c, 2, Vibrato::Shape::trill);
+    CHECK (c.hasVibratoShape (Vibrato::Shape::sine));
+    CHECK (c.hasVibratoShape (Vibrato::Shape::trill));
+
+    auto runs = c.getVibratoRuns (4.0);
+    REQUIRE (runs.size() == 2);
+    CHECK (runs[0].settings.shape == Vibrato::Shape::sine);
+    CHECK (runs[1].settings.shape == Vibrato::Shape::trill);
+    CHECK (runs[1].firstPoint == 2);
+
+    // 改其中一段，另一段不受影响
+    auto deeper = runs[0].settings;
+    deeper.depth = 1.5;
+    setRunVibrato (c, runs[0], deeper);
+    CHECK (c.points[0].vibrato->depth == 1.5);
+    CHECK (c.points[2].vibrato->depth == 2.0);
+    CHECK_THAT (c.getMaxAbsOffset (4.0), WithinAbs (2.0, 1e-12));
+
+    // 相邻的段：加上时沿用旁边那一段的参数，于是连成一段（相位连续）
+    setSegmentVibrato (c, 1, Vibrato::Shape::sine);
+    CHECK (c.points[1].vibrato->depth == 1.5);
+    runs = c.getVibratoRuns (4.0);
+    REQUIRE (runs.size() == 2);
+    CHECK (runs[0].start == 0.0);
+    CHECK (runs[0].end == 2.0);
+
+    // 参数不同的相邻段是两段，各自起振（交界处不跳变：前一段收住、后一段从 0 开始）
+    auto other = *c.points[1].vibrato;
+    other.rate = 3.0;
+    c.points[1].vibrato = other;
+    runs = c.getVibratoRuns (4.0);
+    REQUIRE (runs.size() == 3);
+    CHECK (std::abs (c.vibratoAt (1.0, 4.0, 0.5)) < 1e-9);
+    CHECK (std::abs (c.vibratoAt (1.0 - 1e-9, 4.0, 0.5)) < 1e-3);
+
+    // 把一段换成另一种形状只影响这一段
+    setSegmentVibrato (c, 0, Vibrato::Shape::trill);
+    CHECK (c.points[0].vibrato->shape == Vibrato::Shape::trill);
+    CHECK (c.points[1].vibrato->shape == Vibrato::Shape::sine);
+    CHECK (c.points[0].vibrato->depth == 2.0); // 沿用这个音符上已有的 trill
+}
+
+TEST_CASE ("whole-note vibrato and segments convert into each other with their settings", "[vibrato][segments]")
+{
+    PitchCurve c;
+    c.points = { { 0.0, 0.0 }, { 1.0, 0.0 } };
+    setSegmentVibrato (c, 1, Vibrato::Shape::trill);
+    c.points[1].vibrato->depth = -1.0;
+
+    // 整个音符加 trill：沿用这个音符上已有的 trill 参数，各段的颤音去掉
+    setWholeNoteVibrato (c, Vibrato::Shape::trill);
+    CHECK (c.vibrato.wholeNote);
+    CHECK (c.vibrato.depth == -1.0);
+    CHECK_FALSE (c.hasSegmentVibrato());
+
+    // 再改成按段：每一段带上整个音符的参数
+    setSegmentVibrato (c, 0, std::nullopt);
+    CHECK_FALSE (c.vibrato.wholeNote);
+    CHECK_FALSE (c.points[0].vibrato);
+    REQUIRE (c.points[1].vibrato);
+    CHECK (c.points[1].vibrato->depth == -1.0);
+    CHECK_FALSE (c.points[1].vibrato->wholeNote);
+
+    // 整个音符的颤音：改参数用 setRunVibrato，同步速度用 forEachVibrato
+    setWholeNoteVibrato (c, Vibrato::Shape::sine);
+    auto runs = c.getVibratoRuns (2.0);
+    REQUIRE (runs.size() == 1);
+    CHECK (runs[0].isWholeNote());
+    auto v = runs[0].settings;
+    v.depth = 0.9;
+    setRunVibrato (c, runs[0], v);
+    CHECK (c.vibrato.wholeNote);
+    CHECK (c.vibrato.depth == 0.9);
+
+    forEachVibrato (c, [] (Vibrato& x) { setVibratoSync (x, true, 0.5); });
+    CHECK (c.vibrato.sync);
+}
+
+TEST_CASE ("per-segment settings are saved, and older saves still load", "[vibrato][segments][serializer]")
+{
+    Project p;
+    const auto id = p.addNote (0.0, 4.0, 60, 0.8f);
+    auto& c = findNote (p, id)->curve;
+    c.points = { { 0.0, 0.0 }, { 1.0, 0.0 }, { 2.0, 1.0 } };
+    setSegmentVibrato (c, 0, Vibrato::Shape::sine);
+    setSegmentVibrato (c, 2, Vibrato::Shape::trill);
+    c.points[0].vibrato->depth = 0.8;
+    c.points[2].vibrato->rate = 2.0;
+
+    const auto restored = ProjectSerializer::fromValueTree (ProjectSerializer::toValueTree (p));
+    REQUIRE (restored.has_value());
+    CHECK (findNote (*restored, id)->curve == c);
+
+    // 早期格式：节点上只有 vib 标记，参数在音符的 Vibrato 里
+    juce::ValueTree note ("Note");
+    juce::ValueTree a ("Point"), b ("Point");
+    a.setProperty ("t", 0.0, nullptr);
+    a.setProperty ("st", 0.0, nullptr);
+    a.setProperty ("vib", true, nullptr);
+    b.setProperty ("t", 1.0, nullptr);
+    b.setProperty ("st", 2.0, nullptr);
+    juce::ValueTree vib ("Vibrato");
+    vib.setProperty ("depth", 0.7, nullptr);
+    vib.setProperty ("rate", 4.0, nullptr);
+    note.appendChild (a, nullptr);
+    note.appendChild (b, nullptr);
+    note.appendChild (vib, nullptr);
+
+    const auto legacy = ProjectSerializer::readCurve (note);
+    REQUIRE (legacy.points.size() == 2);
+    REQUIRE (legacy.points[0].vibrato);
+    CHECK (legacy.points[0].vibrato->depth == 0.7);
+    CHECK (legacy.points[0].vibrato->rate == 4.0);
+    CHECK_FALSE (legacy.points[1].vibrato);
+}
+
+TEST_CASE ("gliding keeps each note's own vibrato settings", "[vibrato][segments][glide]")
+{
+    Project p;
+    const auto a = p.addNote (0.0, 1.0, 60, 0.8f);
+    const auto b = p.addNote (1.0, 1.0, 62, 0.8f);
+    setWholeNoteVibrato (findNote (p, a)->curve, Vibrato::Shape::sine);
+    setWholeNoteVibrato (findNote (p, b)->curve, Vibrato::Shape::trill);
+
+    REQUIRE (glideNotes (p, { a, b }).error == GlideResult::Error::none);
+    const auto runs = p.notes.front().curve.getVibratoRuns (2.0);
+    REQUIRE (runs.size() == 2);
+    CHECK (runs[0].settings.shape == Vibrato::Shape::sine);
+    CHECK (runs[1].settings.shape == Vibrato::Shape::trill);
 }

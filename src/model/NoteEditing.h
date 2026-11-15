@@ -2,6 +2,9 @@
 
 #include "model/Project.h"
 
+#include <functional>
+#include <optional>
+
 #include <set>
 #include <vector>
 
@@ -142,14 +145,21 @@ void applyShape (PitchCurve&, Shape, double noteLength, double bendRange);
 //==============================================================================
 // 颤音
 
-/** 给 segment（起点节点的下标）这一段加上或去掉颤音。整个音符的颤音会先换成按段的。 */
-void setSegmentVibrato (PitchCurve&, int segment, bool on);
+/** 给 segment（起点节点的下标）这一段加上某种形状的颤音（shape 为空时去掉）。整个音符的颤音会先换成按段的。
+    新加的参数沿用相邻的同形状的段（于是和它连成一段），其次是这个音符上任意同形状的段，否则用这种形状的默认值。 */
+void setSegmentVibrato (PitchCurve&, int segment, std::optional<Vibrato::Shape>);
 
-/** 整个音符加上或去掉颤音。 */
-void setWholeNoteVibrato (PitchCurve&, bool on);
+/** 整个音符加上某种形状的颤音（shape 为空时去掉）。各段的颤音被去掉；参数沿用这个音符上同形状的颤音。 */
+void setWholeNoteVibrato (PitchCurve&, std::optional<Vibrato::Shape>);
 
-/** 去掉所有颤音（参数保留，再次加上时沿用）。 */
+/** 去掉所有颤音和 trill（整个音符的参数保留，再次加上时沿用）。 */
 void removeVibrato (PitchCurve&);
+
+/** 把一段颤音（PitchCurve::Run，可以是整个音符的）的参数换成 settings。 */
+void setRunVibrato (PitchCurve&, const PitchCurve::Run&, const Vibrato& settings);
+
+/** 对这条曲线上所有生效的颤音参数调用 change（整个音符的，或每个带颤音的节点的）。 */
+void forEachVibrato (PitchCurve&, const std::function<void (Vibrato&)>& change);
 
 /** 套用曲线预设：节点按 noteLength / presetLength 伸缩到音符长度，颤音（含形状、范围）照搬，
     原有的曲线被替换。颤音速度不伸缩。 */
