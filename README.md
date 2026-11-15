@@ -8,6 +8,8 @@ Curvable does not make sound by itself. It hosts the synth you already use and r
 
 Curvable is designed for FL Studio on Windows, whose piano roll cannot bend the notes of a chord independently.
 
+![A chord in Curvable's piano roll: every note follows its own curve, with vibrato and a trill on some segments](docs/images/piano-roll.png)
+
 ## Features
 
 - **Per-note pitch curves.** Add points, drag them to any pitch, and shape each segment from straight to strongly curved. Points snap to semitones and the grid; hold Alt for free movement.
@@ -53,6 +55,8 @@ Then rescan plugins in your host. In FL Studio, open **Options > Manage plugins*
 5. Set **Bend** at the bottom to the pitch bend range of your synth, and set the synth to the same value. Press play in FL Studio.
 
 Press **F1** or click **?** in Curvable for the full list of mouse and keyboard actions.
+
+![The Synth page shows the hosted synth's own interface, with the automation slots panel on the right](docs/images/synth-page.png)
 
 ## Documentation
 

@@ -8,6 +8,8 @@ Curvable 本身不发声。它托管你已有的音源，并按需要复制出�
 
 Curvable 主要为 Windows 上的 FL Studio 设计：FL Studio 的钢琴卷帘无法让和弦里的音符各自弯音。
 
+![Curvable 卷帘中的和弦：每个音符都沿自己的曲线走，部分段落带有颤音和 Trill](docs/images/piano-roll.png)
+
 ## 功能
 
 - **逐音符的音高曲线。** 添加节点，拖到任意音高，并把每一段从直线调成不同程度的弯曲。节点吸附到半音和网格，按住 Alt 可自由移动。
@@ -53,6 +55,8 @@ xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/VST3/Curvable.vst3
 5. 把底栏的 **弯音** 设成音源的弯音范围，并在音源里设成相同的值。然后在 FL Studio 里播放。
 
 在 Curvable 中按 **F1** 或点 **?**，可以查看全部鼠标和键盘操作。
+
+![音源页显示托管音源自己的界面，右侧是自动化槽面板](docs/images/synth-page.png)
 
 ## 文档
 
