@@ -28,7 +28,7 @@ namespace
     constexpr auto themeKey = "theme";
     constexpr auto copiesNoticeKey = "copiesNoticeDismissed";
 
-    enum MenuIds { dayThemeId = 1, nightThemeId, testPhraseId, clearNotesId, pluginManagerId, shortcutsId, syncCopiesId, languageBaseId = 100 };
+    enum MenuIds { dayThemeId = 1, nightThemeId, clearNotesId, pluginManagerId, shortcutsId, syncCopiesId, languageBaseId = 100 };
 
     /** 插件扫描与管理窗口（JUCE 自带的 PluginListComponent）。 */
     class PluginManagerWindow final : public juce::DocumentWindow
@@ -770,7 +770,6 @@ void CurvableEditor::showSettingsMenu()
 
     menu.addSubMenu (i18n::tr ("Language") + (i18n::getLanguage() == i18n::Language::english ? juce::String() : " (Language)"), languages);
     menu.addSeparator();
-    menu.addItem (testPhraseId, i18n::tr ("Insert test phrase"));
     menu.addItem (clearNotesId, i18n::tr ("Clear all notes"), ! processor.getProject().notes.empty());
     menu.addSeparator();
     menu.addItem (syncCopiesId, i18n::tr ("Sync synth copies now"), hosted.getNumInstances() > 1);
@@ -807,17 +806,6 @@ void CurvableEditor::showSettingsMenu()
         {
             case dayThemeId:   self->applyTheme (false); break;
             case nightThemeId: self->applyTheme (true); break;
-
-            case testPhraseId:
-            {
-                // 测试乐句的音符 id 接在现有 id 之后，撤销 / 重做不会冲突
-                auto phrase = Project::createTestPhrase();
-                const auto offset = self->processor.getProject().nextId;
-                for (auto& n : phrase.notes)
-                    n.id += offset;
-                replaceNotes (phrase.notes, phrase.nextId + offset, "Insert test phrase");
-                break;
-            }
 
             case clearNotesId:    replaceNotes ({}, 0, "Clear all notes"); break;
             case pluginManagerId: self->showPluginManager(); break;

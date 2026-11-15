@@ -1,4 +1,4 @@
-# 统一换行符，避免 Windows / macOS 协作时出现无意义的 diff
+# Normalise line endings so Windows and macOS checkouts produce the same diffs
 * text=auto eol=lf
 *.bat text eol=crlf
 *.cmd text eol=crlf
@@ -6,7 +6,7 @@
 *.sln text eol=crlf
 *.vcxproj text eol=crlf
 
-# 二进制资源
+# Binary assets
 *.png binary
 *.jpg binary
 *.ico binary

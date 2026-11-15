@@ -295,7 +295,6 @@ namespace
         { { "Day", "浅色", "ライト", "라이트", "Claro" } },
         { { "Night", "深色", "ダーク", "다크", "Oscuro" } },
         { { "Language", "语言", "言語", "언어", "Idioma" } },
-        { { "Insert test phrase", "插入测试乐句", "テストフレーズを挿入", "테스트 프레이즈 삽입", "Insertar frase de prueba" } },
         { { "Clear all notes", "清除所有音符", "すべてのノートを消去", "모든 노트 지우기", "Borrar todas las notas" } },
         { { "Sync synth copies now", "立即同步音源副本", "音源のコピーを今すぐ同期", "신스 복사본 지금 동기화", "Sincronizar copias ahora" } },
         { { "Plugin manager...", "插件管理器...", "プラグインマネージャー...", "플러그인 관리자...", "Gestor de plugins..." } },

@@ -1,7 +1,8 @@
 name: CI
 
-# Windows 是主要平台：每次推送都检查。
-# macOS 只是兜底，编译很慢（20 分钟到 1 小时）：每周一次、发布（v* 标签）时和手动运行时检查。
+# Windows is the main platform and is checked on every push.
+# macOS builds are slow, so they run weekly, on release tags (v*) and on manual runs.
+# Pushing a tag such as v0.1.0 also publishes a GitHub release with the Windows installer.
 on:
   push:
     branches: [main]
@@ -9,7 +10,7 @@ on:
   pull_request:
   workflow_dispatch:
   schedule:
-    - cron: '0 3 * * 1' # 每周一 03:00 UTC
+    - cron: '0 3 * * 1' # Mondays 03:00 UTC
 
 concurrency:
   group: ci-${{ github.ref }}-${{ github.event_name }}
@@ -25,6 +26,17 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
+
+      - name: Read version
+        id: version
+        shell: bash
+        run: |
+          version=$(sed -n 's/^project(Curvable VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [[ "$GITHUB_REF" == refs/tags/v* && "${GITHUB_REF#refs/tags/v}" != "$version" ]]; then
+            echo "::error::Tag ${GITHUB_REF#refs/tags/} does not match the version in CMakeLists.txt ($version)"
+            exit 1
+          fi
 
       - name: Configure
         run: cmake -B build -S . -DCMAKE_BUILD_TYPE=Release
@@ -47,12 +59,31 @@ jobs:
           ./pluginval.exe --strictness-level 5 --validate-in-process --skip-gui-tests \
             "build/Curvable_artefacts/Release/VST3/Curvable.vst3"
 
+      - name: Build installer
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            choco install innosetup --no-progress -y
+          }
+          & $iscc /Qp "/DAppVersion=${{ steps.version.outputs.version }}" scripts\Curvable.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $version = "${{ steps.version.outputs.version }}"
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item "build\installer\Curvable-$version-Windows-Setup.exe" dist\
+          Compress-Archive -Path "build\Curvable_artefacts\Release\VST3\Curvable.vst3" `
+                           -DestinationPath "dist\Curvable-$version-Windows-VST3.zip"
+
       - name: Upload artefacts
         uses: actions/upload-artifact@v4
         with:
           name: Curvable-Windows
-          path: build/Curvable_artefacts/Release/VST3
-          if-no-files-found: ignore
+          path: dist/*
+          if-no-files-found: error
 
   macos:
     name: macOS
@@ -96,11 +127,64 @@ jobs:
           killall -9 AudioComponentRegistrar || true
           auval -v aumu Crvb Ashn
 
+      - name: Package
+        shell: bash
+        run: |
+          version=$(sed -n 's/^project(Curvable VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)
+          mkdir -p dist
+          cd build/Curvable_artefacts/Release
+          ditto -c -k --keepParent VST3/Curvable.vst3 "$GITHUB_WORKSPACE/dist/Curvable-$version-macOS-VST3.zip"
+          ditto -c -k --keepParent AU/Curvable.component "$GITHUB_WORKSPACE/dist/Curvable-$version-macOS-AU.zip"
+
       - name: Upload artefacts
         uses: actions/upload-artifact@v4
         with:
           name: Curvable-macOS
-          path: |
-            build/Curvable_artefacts/Release/VST3
-            build/Curvable_artefacts/Release/AU
-          if-no-files-found: ignore
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    name: Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [windows, macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Write release notes
+        shell: bash
+        run: |
+          version="${GITHUB_REF#refs/tags/v}"
+          # The section for this version in CHANGELOG.md
+          awk -v heading="## [$version]" '
+            index($0, heading) == 1 { found = 1; next }
+            found && index($0, "## [") == 1 { exit }
+            found { print }
+          ' CHANGELOG.md > notes.md
+          if [ ! -s notes.md ]; then
+            echo "::error::CHANGELOG.md has no section for $version"
+            exit 1
+          fi
+          cat >> notes.md <<'EOF'
+
+          ### Downloads
+
+          - **Windows:** `Curvable-*-Windows-Setup.exe` installs the VST3 plugin. `Curvable-*-Windows-VST3.zip` contains the same plugin for manual installation.
+          - **macOS:** VST3 and AU builds. They pass automated validation but have not been tested on real hardware yet, and they are not notarized (see the user guide).
+          EOF
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --title "Curvable ${GITHUB_REF_NAME#v}" \
+            --notes-file notes.md

@@ -17,6 +17,6 @@ trim_trailing_whitespace = false
 [*.{bat,cmd,ps1}]
 end_of_line = crlf
 
-# Windows PowerShell 5.1 需要 BOM 才能正确识别 UTF-8 中文
+# Windows PowerShell 5.1 needs a BOM to read UTF-8 scripts correctly
 [*.ps1]
 charset = utf-8-bom
