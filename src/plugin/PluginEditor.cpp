@@ -28,14 +28,14 @@ namespace
     constexpr auto themeKey = "theme";
     constexpr auto copiesNoticeKey = "copiesNoticeDismissed";
 
-    enum MenuIds { dayThemeId = 1, nightThemeId, testPhraseId, clearNotesId, pluginManagerId, shortcutsId, syncCopiesId };
+    enum MenuIds { dayThemeId = 1, nightThemeId, testPhraseId, clearNotesId, pluginManagerId, shortcutsId, syncCopiesId, languageBaseId = 100 };
 
     /** 插件扫描与管理窗口（JUCE 自带的 PluginListComponent）。 */
     class PluginManagerWindow final : public juce::DocumentWindow
     {
     public:
         PluginManagerWindow (HostingContext& context, juce::Colour background, std::function<void()> onCloseRequested)
-            : DocumentWindow ("Curvable - Plugin manager", background, DocumentWindow::closeButton),
+            : DocumentWindow (i18n::tr ("Curvable - Plugin manager"), background, DocumentWindow::closeButton),
               onClose (std::move (onCloseRequested))
         {
             setUsingNativeTitleBar (true);
@@ -110,7 +110,7 @@ void CurvableEditor::SlotsHandle::paintButton (juce::Graphics& g, bool isHighlig
     g.addTransform (juce::AffineTransform::rotation (-juce::MathConstants<float>::halfPi, centre.x, centre.y));
     g.setColour (isHighlighted ? palette.text : palette.muted);
     g.setFont (juce::FontOptions (12.0f, juce::Font::bold));
-    g.drawFittedText ("AUTOMATION", juce::Rectangle<float> (juce::jmax (40.0f, r.getHeight() - 60.0f), 18.0f).withCentre (centre).toNearestInt(),
+    g.drawFittedText (i18n::tr ("AUTOMATION"), juce::Rectangle<float> (juce::jmax (40.0f, r.getHeight() - 60.0f), 18.0f).withCentre (centre).toNearestInt(),
                       juce::Justification::centred, 1, 0.7f);
     g.restoreState();
 
@@ -162,6 +162,7 @@ CurvableEditor::CurvableEditor (CurvableProcessor& p)
       lookAndFeel (palette)
 {
     setLookAndFeel (&lookAndFeel);
+    i18n::setLanguage (i18n::languageFromCode (context.getSettings().getValue (languageKey)));
 
     // 工具栏
     for (auto* tab : { &pianoRollTab, &synthTab })
@@ -195,9 +196,6 @@ CurvableEditor::CurvableEditor (CurvableProcessor& p)
         addAndMakeVisible (button);
     }
 
-    autoModeButton.setTooltip ("Play Curvable's notes along the host's timeline");
-    triggerModeButton.setTooltip ("A note in the host's piano roll starts playback; it loops while the note is held. Host notes make no sound.");
-    offModeButton.setTooltip ("Don't play Curvable's notes");
 
     CurvableLookAndFeel::setStyle (synthButton, "pill");
     synthButton.getProperties().set ("chevron", true);
@@ -207,9 +205,6 @@ CurvableEditor::CurvableEditor (CurvableProcessor& p)
 
     CurvableLookAndFeel::setStyle (mpeButton, "chip");
     mpeButton.setWantsKeyboardFocus (false);
-    mpeButton.setTooltip ("For synths with MPE turned on: one copy of the synth, every bending note on its own MIDI channel. "
-                          "Bend in the piano roll must match the synth's MPE bend range (usually 48), "
-                          "which is separate from the patch's normal bend range.");
     mpeButton.onClick = [this]
     {
         const auto on = ! processor.isMpeMode();
@@ -225,8 +220,8 @@ CurvableEditor::CurvableEditor (CurvableProcessor& p)
             }
 
             const auto range = processor.getProject().bendRange;
-            showMessage ("MPE on. Turn on MPE in the synth. Its MPE bend range (usually 48, not the patch's normal bend range) "
-                         "must match Bend " + juce::String (range) + ".",
+            showMessage (i18n::trf ("MPE on. Turn on MPE in the synth. Its MPE bend range (usually 48, not the patch's normal bend range) must match Bend {0}.",
+                                    range),
                          false);
         }
 
@@ -234,7 +229,6 @@ CurvableEditor::CurvableEditor (CurvableProcessor& p)
     };
     addChildComponent (mpeButton);
 
-    settingsButton.setTooltip ("Settings");
     settingsButton.setWantsKeyboardFocus (false);
     settingsButton.onClick = [this] { showSettingsMenu(); };
     addAndMakeVisible (settingsButton);
@@ -270,13 +264,11 @@ CurvableEditor::CurvableEditor (CurvableProcessor& p)
         g.setColour (palette.accent);
         g.drawRoundedRectangle (area, 18.0f, 2.0f);
         g.setFont (juce::FontOptions (20.0f, juce::Font::bold));
-        g.drawText ("Drop to load this synth", area, juce::Justification::centred);
+        g.drawText (i18n::tr ("Drop to load this synth"), area, juce::Justification::centred);
     };
     addChildComponent (overlay);
 
     // 第一次用到多个音源副本时提醒一次：音源自带的混响、延迟会被每个副本各加一遍
-    copiesNotice.text = "Curvable now runs several copies of your synth so notes can bend on their own. "
-                        "Turn off the synth's own reverb and delay and use FL's effects instead, or they will stack up.";
     copiesNotice.dismissButton.onClick = [this]
     {
         context.getSettings().setValue (copiesNoticeKey, true);
@@ -288,7 +280,6 @@ CurvableEditor::CurvableEditor (CurvableProcessor& p)
     slotsPanel.onClose = [this] { setSlotsOpen (false); };
     addChildComponent (slotsPanel);
 
-    slotsHandle.setTooltip ("Automation slots: let FL automate knobs of the synth");
     slotsHandle.setWantsKeyboardFocus (false);
     slotsHandle.onClick = [this] { setSlotsOpen (true); };
     addChildComponent (slotsHandle);
@@ -297,6 +288,9 @@ CurvableEditor::CurvableEditor (CurvableProcessor& p)
     processor.projectChanged.addChangeListener (this);
     hosted.addChangeListener (this);
     startTimerHz (4);
+
+    updateTexts();
+    i18n::addListener (this);
 
     setResizable (true, true);
     setResizeLimits (defaultMinWidth, defaultMinHeight, 4096, 2160);
@@ -310,6 +304,7 @@ CurvableEditor::CurvableEditor (CurvableProcessor& p)
 
 CurvableEditor::~CurvableEditor()
 {
+    i18n::removeListener (this);
     stopTimer();
     processor.projectChanged.removeChangeListener (this);
     hosted.removeChangeListener (this);
@@ -368,7 +363,14 @@ void CurvableEditor::resized()
         toolbar.removeFromLeft (compact ? 8 : 14);
     };
 
-    layoutGroup (tabsBounds, { { &pianoRollTab, compact ? 86 : 104 }, { &synthTab, compact ? 62 : 76 } });
+    // 按钮按文字变宽（换成别的语言时文字不会被挤掉）
+    auto fit = [] (juce::TextButton& b, int minimum)
+    {
+        const auto font = b.getLookAndFeel().getTextButtonFont (b, 40);
+        return juce::jmax (minimum, juce::GlyphArrangement::getStringWidthInt (font, b.getButtonText()) + 24);
+    };
+
+    layoutGroup (tabsBounds, { { &pianoRollTab, fit (pianoRollTab, compact ? 86 : 104) }, { &synthTab, fit (synthTab, compact ? 62 : 76) } });
     layoutGroup (modesBounds, { { &autoModeButton, compact ? 52 : 64 }, { &triggerModeButton, compact ? 76 : 86 },
                                 { &offModeButton, compact ? 44 : 54 } });
 
@@ -599,7 +601,7 @@ void CurvableEditor::refresh()
     const auto name = hosted.getPluginName();
 
     if (loading)
-        synthButton.setButtonText ("Loading...");
+        synthButton.setButtonText (i18n::tr ("Loading..."));
     else if (hosted.isLoaded())
     {
         // 多个实例时显示数量；还在创建时显示进度
@@ -614,28 +616,27 @@ void CurvableEditor::refresh()
             // 副本数，括号里是正在运行的（其余因空闲而暂停）
             const auto awake = hosted.getNumAwakeInstances();
             shownAwake = awake;
-            synthButton.setButtonText (name + juce::String::fromUTF8 ("  ×") + juce::String (have)
-                                       + (awake < have ? " (" + juce::String (awake) + " on)" : juce::String()));
+            synthButton.setButtonText (awake < have ? i18n::trf ("{0}  \xc3\x97{1} ({2} on)", name, have, awake)
+                                                    : name + juce::String::fromUTF8 ("  \xc3\x97") + juce::String (have));
         }
         else
             synthButton.setButtonText (name);
 
-        synthButton.setTooltip (processor.isMpeMode() ? juce::String ("MPE mode: one copy of the synth, a MIDI channel per bending note.")
+        synthButton.setTooltip (processor.isMpeMode() ? i18n::tr ("MPE mode: one copy of the synth, a MIDI channel per bending note.")
                               : have > 1 || want > 1
-                                    ? juce::String (have) + " copies of the synth let notes bend independently. "
-                                      "Idle copies pause to save CPU (\"on\" = currently running)."
+                                    ? i18n::trf ("{0} copies of the synth let notes bend independently. Idle copies pause to save CPU (\"on\" = currently running).", have)
                                     : juce::String());
     }
     else if (hosted.isMissing())
-        synthButton.setButtonText ("Missing: " + name);
+        synthButton.setButtonText (i18n::trf ("Missing: {0}", name));
     else
-        synthButton.setButtonText ("Load synth");
+        synthButton.setButtonText (i18n::tr ("Load synth"));
 
     mpeButton.setVisible (hosted.isLoaded());
     mpeButton.setToggleState (processor.isMpeMode(), juce::dontSendNotification);
     synthButton.getProperties().set ("dot", hosted.isMissing() ? "error" : (hosted.isLoaded() ? "accent" : ""));
     synthButton.repaint();
-    synthTab.setButtonText (hosted.isMissing() ? "Synth (!)" : "Synth");
+    synthTab.setButtonText (hosted.isMissing() ? i18n::tr ("Synth (!)") : i18n::tr ("Synth"));
 
     statusIsError = message.isNotEmpty() ? messageIsError
                                          : (hosted.getLastError().isNotEmpty() || hosted.getCloneError().isNotEmpty());
@@ -645,14 +646,14 @@ void CurvableEditor::refresh()
     else if (hosted.getLastError().isNotEmpty())
         statusText = hosted.getLastError();
     else if (hosted.getCloneError().isNotEmpty())
-        statusText = "Could not create another copy of the synth (" + hosted.getCloneError()
-                     + "). Some bent notes play unbent for now; retrying shortly.";
+        statusText = i18n::trf ("Could not create another copy of the synth ({0}). Some bent notes play unbent for now; retrying shortly.",
+                                hosted.getCloneError());
     else if (loading)
-        statusText = "Loading synth...";
+        statusText = i18n::tr ("Loading synth...");
     else if (hosted.isLoaded())
         statusText = {};
     else
-        statusText = "No synth loaded. Click \"Load synth\" or drag a plugin here.";
+        statusText = i18n::tr ("No synth loaded. Click \"Load synth\" or drag a plugin here.");
 
     // 卷帘页底部只显示快捷键提示；音源状态由右上角的音源按钮表示，只有出错（例如加载失败）时才占用这里
     pianoRoll.setStatus (statusIsError ? statusText : juce::String(), statusIsError);
@@ -714,6 +715,29 @@ void CurvableEditor::refreshModeButtons()
 }
 
 //==============================================================================
+void CurvableEditor::updateTexts()
+{
+    pianoRollTab.setButtonText (i18n::tr ("Piano roll"));
+    autoModeButton.setTooltip (i18n::tr ("Play Curvable's notes along the host's timeline"));
+    triggerModeButton.setTooltip (i18n::tr ("A note in the host's piano roll starts playback; it loops while the note is held. Host notes make no sound."));
+    offModeButton.setTooltip (i18n::tr ("Don't play Curvable's notes"));
+    mpeButton.setTooltip (i18n::tr ("For synths with MPE turned on: one copy of the synth, every bending note on its own MIDI channel. Bend in the piano roll must match the synth's MPE bend range (usually 48), which is separate from the patch's normal bend range."));
+    settingsButton.setTooltip (i18n::tr ("Settings"));
+    copiesNotice.text = i18n::tr ("Curvable now runs several copies of your synth so notes can bend on their own. Turn off the synth's own reverb and delay and use FL's effects instead, or they will stack up.");
+    copiesNotice.dismissButton.setButtonText (i18n::tr ("Got it"));
+    slotsHandle.setTooltip (i18n::tr ("Automation slots: let FL automate knobs of the synth"));
+    browser.updateTexts();
+    slotsPanel.updateTexts();
+}
+
+void CurvableEditor::languageChanged()
+{
+    updateTexts();
+    refresh();
+    resized();
+    repaint();
+}
+
 void CurvableEditor::applyTheme (bool dark)
 {
     palette = dark ? Palette::night() : Palette::day();
@@ -733,16 +757,25 @@ void CurvableEditor::applyTheme (bool dark)
 void CurvableEditor::showSettingsMenu()
 {
     juce::PopupMenu menu;
-    menu.addSectionHeader ("Theme");
-    menu.addItem (dayThemeId, "Day", true, ! palette.isDark);
-    menu.addItem (nightThemeId, "Night", true, palette.isDark);
+    menu.addSectionHeader (i18n::tr ("Theme"));
+    menu.addItem (dayThemeId, i18n::tr ("Day"), true, ! palette.isDark);
+    menu.addItem (nightThemeId, i18n::tr ("Night"), true, palette.isDark);
+
+    // 语言：用各自的文字写，不论当前是什么语言都认得出来
+    juce::PopupMenu languages;
+
+    for (const auto& info : i18n::getLanguages())
+        languages.addItem (languageBaseId + (int) info.language, juce::String::fromUTF8 (info.nativeName),
+                           true, i18n::getLanguage() == info.language);
+
+    menu.addSubMenu (i18n::tr ("Language") + (i18n::getLanguage() == i18n::Language::english ? juce::String() : " (Language)"), languages);
     menu.addSeparator();
-    menu.addItem (testPhraseId, "Insert test phrase");
-    menu.addItem (clearNotesId, "Clear all notes", ! processor.getProject().notes.empty());
+    menu.addItem (testPhraseId, i18n::tr ("Insert test phrase"));
+    menu.addItem (clearNotesId, i18n::tr ("Clear all notes"), ! processor.getProject().notes.empty());
     menu.addSeparator();
-    menu.addItem (syncCopiesId, "Sync synth copies now", hosted.getNumInstances() > 1);
-    menu.addItem (pluginManagerId, "Plugin manager...");
-    menu.addItem (shortcutsId, "Mouse & keyboard shortcuts (F1)");
+    menu.addItem (syncCopiesId, i18n::tr ("Sync synth copies now"), hosted.getNumInstances() > 1);
+    menu.addItem (pluginManagerId, i18n::tr ("Plugin manager..."));
+    menu.addItem (shortcutsId, i18n::tr ("Mouse & keyboard shortcuts (F1)"));
 
     juce::Component::SafePointer<CurvableEditor> safeThis (this);
     menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&settingsButton), [safeThis] (int result)
@@ -760,6 +793,15 @@ void CurvableEditor::showSettingsMenu()
             self->processor.setProject (std::move (project), false);
             self->processor.commitEdit (before, name);
         };
+
+        if (result >= languageBaseId && result < languageBaseId + i18n::numLanguages)
+        {
+            const auto language = (i18n::Language) (result - languageBaseId);
+            self->context.getSettings().setValue (languageKey, i18n::codeOf (language));
+            self->context.getSettings().saveIfNeeded();
+            i18n::setLanguage (language);
+            return;
+        }
 
         switch (result)
         {
@@ -915,7 +957,7 @@ void CurvableEditor::browseForPluginFile()
     startDir = juce::File ("/Library/Audio/Plug-Ins");
    #endif
 
-    fileChooser = std::make_unique<juce::FileChooser> ("Choose a synth plugin", startDir, "*.vst3;*.component");
+    fileChooser = std::make_unique<juce::FileChooser> (i18n::tr ("Choose a synth plugin"), startDir, "*.vst3;*.component");
 
     juce::Component::SafePointer<CurvableEditor> safeThis (this);
 
@@ -930,7 +972,7 @@ void CurvableEditor::browseForPluginFile()
 
 void CurvableEditor::loadPluginFile (const juce::File& file)
 {
-    showMessage ("Reading " + file.getFileName() + "...", false);
+    showMessage (i18n::trf ("Reading {0}...", file.getFileName()), false);
 
     // 读取插件需要一两秒；稍后执行，让"正在读取"的提示先显示出来
     juce::Component::SafePointer<CurvableEditor> safeThis (this);
@@ -946,8 +988,7 @@ void CurvableEditor::loadPluginFile (const juce::File& file)
 
         if (instruments.isEmpty())
         {
-            self->showMessage ("Could not load a synth from " + file.getFileName()
-                                   + ". It may not be an instrument, or it failed to start.", true);
+            self->showMessage (i18n::trf ("Could not load a synth from {0}. It may not be an instrument, or it failed to start.", file.getFileName()), true);
             return;
         }
 

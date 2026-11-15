@@ -5,6 +5,9 @@
 namespace curvable
 {
 
+using i18n::tr;
+using i18n::trf;
+
 namespace
 {
     constexpr int bottomBarHeight = 48;
@@ -36,8 +39,8 @@ namespace
     struct GridOption { const char* name; double beats; };
 
     const GridOption gridOptions[] = {
-        { "Bar", 4.0 }, { "1/4", 1.0 }, { "1/8", 0.5 }, { "1/16", 0.25 }, { "1/32", 0.125 },
-        { "1/8 triplet", 1.0 / 3.0 }, { "1/16 triplet", 1.0 / 6.0 }, { "None", 0.0 },
+        { TRK ("Bar"), 4.0 }, { "1/4", 1.0 }, { "1/8", 0.5 }, { "1/16", 0.25 }, { "1/32", 0.125 },
+        { TRK ("1/8 triplet"), 1.0 / 3.0 }, { TRK ("1/16 triplet"), 1.0 / 6.0 }, { TRK ("None"), 0.0 },
     };
 }
 
@@ -242,15 +245,16 @@ struct PianoRoll::NoteArea final : public juce::Component
         return { x0 + 1.0f, y, juce::jmax (3.0f, x1 - x0 - 2.0f), h };
     }
 
-    /** 音符本体的轮廓（填充用）。 */
-    juce::Path bodyPath (const Note& n) const
+    /** 音符本体的轮廓（填充用）。grow > 0 时整体加粗 grow 像素（选中、声部不够的描边用）。 */
+    juce::Path bodyPath (const Note& n, float grow = 0.0f) const
     {
         const auto r = noteBounds (n);
         juce::Path path;
 
         if (n.curve.pointsFlat() && ! literalVibrato (n))
         {
-            path.addRoundedRectangle (r, r.getHeight() / 2.0f);
+            const auto outer = r.expanded (grow);
+            path.addRoundedRectangle (outer, outer.getHeight() / 2.0f);
             return path;
         }
 
@@ -270,7 +274,7 @@ struct PianoRoll::NoteArea final : public juce::Component
 
         centre.lineTo (xb + 0.01f, yAt (xb)); // 长度为 0 时也要有一点，才画得出圆点
 
-        juce::PathStrokeType (r.getHeight(), juce::PathStrokeType::curved, juce::PathStrokeType::rounded)
+        juce::PathStrokeType (r.getHeight() + grow * 2.0f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded)
             .createStrokedPath (path, centre);
         return path;
     }
@@ -563,19 +567,25 @@ struct PianoRoll::NoteArea final : public juce::Component
             neu::raisedFast (g, path, colour, p, 1.2f);
 
 
+            // 描边：不能直接描本体的轮廓（弯折处粗线的轮廓会折进本体里，描出来的线互相交叠）。
+            // 改为在下面铺一层加粗的本体，再把本体盖回去，只露出外圈
             if (owner.selection.count (n.id) != 0)
             {
                 g.setColour (p.warm);
-                g.strokePath (path, juce::PathStrokeType (2.0f));
+                g.fillPath (bodyPath (n, 1.6f));
+                g.setColour (colour);
+                g.fillPath (path);
             }
             else if (owner.overflowNotes.count (n.id) != 0)
             {
-                // 声部不够：弯音会受别的音符影响
+                // 声部不够：弯音会受别的音符影响。虚线画在加粗轮廓上，折进去的部分被本体盖住
                 juce::Path dashed;
                 const float dashes[] = { 4.0f, 3.0f };
-                juce::PathStrokeType (1.6f).createDashedStroke (dashed, path, dashes, 2);
+                juce::PathStrokeType (1.6f).createDashedStroke (dashed, bodyPath (n, 0.8f), dashes, 2);
                 g.setColour (p.error);
                 g.fillPath (dashed);
+                g.setColour (colour);
+                g.fillPath (path);
             }
 
             if (r.getWidth() > 34.0f && r.getHeight() >= 10.0f)
@@ -742,14 +752,14 @@ struct PianoRoll::NoteArea final : public juce::Component
 
         if (shapeActive)
         {
-            const auto depth = vib.shape == Vibrato::Shape::trill ? "Trill " + formatSemitones (vib.depth)
+            const auto depth = vib.shape == Vibrato::Shape::trill ? trf ("Trill {0}", formatSemitones (vib.depth))
                                                                   : juce::String (vib.depth, 2) + " st";
             const auto above = vib.depth >= 0.0 || vib.shape != Vibrato::Shape::trill;
             paintValueLabel (g, depth + "   " + formatRate (vib), h->shape.translated (0.0f, above ? -16.0f : 16.0f), p.text);
         }
 
         if (fadeActive)
-            paintValueLabel (g, "Fade in " + juce::String (vib.fade, 2) + " beats", h->fade.translated (0.0f, 18.0f), p.text);
+            paintValueLabel (g, trf ("Fade in {0} beats", juce::String (vib.fade, 2)), h->fade.translated (0.0f, 18.0f), p.text);
     }
 
     void paintCurvePoints (juce::Graphics& g, const Note& n, bool focused) const
@@ -1211,34 +1221,34 @@ struct PianoRoll::NoteArea final : public juce::Component
 
         if (targets.size() >= 2)
         {
-            menu.addItem (glideId, "Glide into legato notes (G)");
+            menu.addItem (glideId, tr ("Glide into legato notes (G)"));
             menu.addSeparator();
         }
 
         const auto noSegment = segment < 0;
-        menu.addSectionHeader ("Vibrato and trill");
-        menu.addItem (vibSegmentId, noSegment ? "Vibrato on this segment (add points first)" : "Vibrato on this segment",
+        menu.addSectionHeader (tr ("Vibrato and trill"));
+        menu.addItem (vibSegmentId, noSegment ? tr ("Vibrato on this segment (add points first)") : tr ("Vibrato on this segment"),
                       ! noSegment, segmentOn && ! isTrill);
-        menu.addItem (vibWholeId, "Vibrato on whole note", true, vib.wholeNote && ! isTrill);
-        menu.addItem (trillSegmentId, noSegment ? "Trill on this segment (add points first)" : "Trill on this segment",
+        menu.addItem (vibWholeId, tr ("Vibrato on whole note"), true, vib.wholeNote && ! isTrill);
+        menu.addItem (trillSegmentId, noSegment ? tr ("Trill on this segment (add points first)") : tr ("Trill on this segment"),
                       ! noSegment, segmentOn && isTrill);
-        menu.addItem (trillWholeId, "Trill on whole note", true, vib.wholeNote && isTrill);
-        menu.addItem (syncId, "Lock speed to tempo", hasVibrato, vib.sync);
-        menu.addItem (removeId, hasVibrato && isTrill ? "Remove trill" : "Remove vibrato", hasVibrato);
+        menu.addItem (trillWholeId, tr ("Trill on whole note"), true, vib.wholeNote && isTrill);
+        menu.addItem (syncId, tr ("Lock speed to tempo"), hasVibrato, vib.sync);
+        menu.addItem (removeId, hasVibrato && isTrill ? tr ("Remove trill") : tr ("Remove vibrato"), hasVibrato);
         menu.addSeparator();
-        menu.addSectionHeader ("Bend");
+        menu.addSectionHeader (tr ("Bend"));
 
         struct ShapeItem { const char* name; editing::Shape shape; };
         static const ShapeItem shapes[] = {
-            { "Scoop (slide in from below)", editing::Shape::scoop },
-            { "Overshoot (go past, settle back)", editing::Shape::overshoot },
-            { "Bend and release", editing::Shape::bendRelease },
-            { "Fall (drop at the end)", editing::Shape::fall },
-            { "Doit (flick up at the end)", editing::Shape::doit },
+            { TRK ("Scoop (slide in from below)"), editing::Shape::scoop },
+            { TRK ("Overshoot (go past, settle back)"), editing::Shape::overshoot },
+            { TRK ("Bend and release"), editing::Shape::bendRelease },
+            { TRK ("Fall (drop at the end)"), editing::Shape::fall },
+            { TRK ("Doit (flick up at the end)"), editing::Shape::doit },
         };
 
         for (int i = 0; i < (int) std::size (shapes); ++i)
-            menu.addItem (shapeBase + i, shapes[i].name);
+            menu.addItem (shapeBase + i, tr (shapes[i].name));
 
         // 预设：套用到所有选中的音符（按音符长度伸缩）
         juce::PopupMenu presetMenu;
@@ -1248,10 +1258,10 @@ struct PianoRoll::NoteArea final : public juce::Component
             presetMenu.addItem (presetBase + i, presets[(size_t) i].name);
 
         if (presets.empty())
-            presetMenu.addItem (noPresetsId, "No presets yet", false);
+            presetMenu.addItem (noPresetsId, tr ("No presets yet"), false);
 
         presetMenu.addSeparator();
-        presetMenu.addItem (savePresetId, curve.isFlat() ? "Save curve as preset (draw a curve first)" : "Save curve as preset...",
+        presetMenu.addItem (savePresetId, curve.isFlat() ? tr ("Save curve as preset (draw a curve first)") : tr ("Save curve as preset..."),
                             ! curve.isFlat());
 
         if (! presets.empty())
@@ -1261,12 +1271,12 @@ struct PianoRoll::NoteArea final : public juce::Component
             for (int i = 0; i < shownPresets; ++i)
                 deleteMenu.addItem (deleteBase + i, presets[(size_t) i].name);
 
-            presetMenu.addSubMenu ("Delete preset", deleteMenu);
+            presetMenu.addSubMenu (tr ("Delete preset"), deleteMenu);
         }
 
         menu.addSeparator();
-        menu.addSubMenu ("Presets", presetMenu);
-        menu.addItem (clearId, "Clear curve", ! curve.isFlat());
+        menu.addSubMenu (tr ("Presets"), presetMenu);
+        menu.addItem (clearId, tr ("Clear curve"), ! curve.isFlat());
 
         juce::Component::SafePointer<NoteArea> safeThis (this);
 
@@ -1297,7 +1307,7 @@ struct PianoRoll::NoteArea final : public juce::Component
             {
                 const auto& preset = presets[(size_t) (result - deleteBase)];
                 o.presetLibrary.remove (preset.name);
-                o.flashMessage ("Deleted preset \"" + preset.name + "\"");
+                o.flashMessage (trf ("Deleted preset \"{0}\"", preset.name));
                 return;
             }
 
@@ -1825,54 +1835,54 @@ struct PianoRoll::ShortcutsPanel final : public juce::Component
     {
         // 源文件为 UTF-8；箭头等字符用 fromUTF8 转换
         static const std::vector<Section> sections {
-            { "Notes", {
-                { "Click empty space", "Add a note (Draw tool)" },
-                { "Drag after clicking", "Set the new note's length" },
-                { "Drag a note", "Move it (time and pitch)" },
-                { "Drag a note's right end", "Change its length" },
-                { "Alt + drag", "Move or resize without snapping" },
-                { "Right-click / right-drag", "Delete notes" },
-                { "Drag a selected note's points", "Adjust its bend (no need for Curve)" },
-                { "Drag in the VEL lane", "Change velocity" },
-                { "Alt + wheel on a note", "Change velocity" },
-                { "Click a key", "Preview the pitch" },
+            { TRK ("Notes"), {
+                { TRK ("Click empty space"), TRK ("Add a note (Draw tool)") },
+                { TRK ("Drag after clicking"), TRK ("Set the new note's length") },
+                { TRK ("Drag a note"), TRK ("Move it (time and pitch)") },
+                { TRK ("Drag a note's right end"), TRK ("Change its length") },
+                { TRK ("Alt + drag"), TRK ("Move or resize without snapping") },
+                { TRK ("Right-click / right-drag"), TRK ("Delete notes") },
+                { TRK ("Drag a selected note's points"), TRK ("Adjust its bend (no need for Curve)") },
+                { TRK ("Drag in the VEL lane"), TRK ("Change velocity") },
+                { TRK ("Alt + wheel on a note"), TRK ("Change velocity") },
+                { TRK ("Click a key"), TRK ("Preview the pitch") },
             } },
-            { "Selection", {
-                { "Ctrl + drag", "Box select (any tool)" },
-                { "Shift + click", "Add to / remove from selection" },
-                { "Ctrl + A", "Select all" },
-                { "Esc", "Clear selection" },
+            { TRK ("Selection"), {
+                { TRK ("Ctrl + drag"), TRK ("Box select (any tool)") },
+                { TRK ("Shift + click"), TRK ("Add to / remove from selection") },
+                { TRK ("Ctrl + A"), TRK ("Select all") },
+                { TRK ("Esc"), TRK ("Clear selection") },
             } },
-            { "Editing", {
-                { "Delete", "Delete selected notes" },
-                { "Ctrl + C / X / V", "Copy / cut / paste at the mouse" },
-                { "Ctrl + B  or  Ctrl + D", "Duplicate after the selection" },
-                { "\xe2\x86\x91 \xe2\x86\x93", "Transpose (Shift: octave)" },
-                { "\xe2\x86\x90 \xe2\x86\x92", "Move by the snap step (Shift: bar)" },
-                { "Ctrl + Z / Ctrl + Y", "Undo / redo" },
+            { TRK ("Editing"), {
+                { TRK ("Delete"), TRK ("Delete selected notes") },
+                { TRK ("Ctrl + C / X / V"), TRK ("Copy / cut / paste at the mouse") },
+                { TRK ("Ctrl + B  or  Ctrl + D"), TRK ("Duplicate after the selection") },
+                { "\xe2\x86\x91 \xe2\x86\x93", TRK ("Transpose (Shift: octave)") },
+                { "\xe2\x86\x90 \xe2\x86\x92", TRK ("Move by the snap step (Shift: bar)") },
+                { TRK ("Ctrl + Z / Ctrl + Y"), TRK ("Undo / redo") },
             } },
-            { "Pitch curves (Curve tool)", {
-                { "Click a note", "Add a bend point (keep dragging)" },
-                { "Drag a point", "Move it (snaps to semitones, grid)" },
-                { "Drag a small circle", "Change the curve shape" },
-                { "Right-click a point", "Delete it" },
-                { "Double-click a note", "Remove its whole curve" },
-                { "Right-click a note", "Vibrato, trill, bends, presets" },
-                { "G  (2+ notes selected)", "Glide: merge a line or chords into legato notes" },
-                { "Shift+click / Ctrl+drag", "Select several notes" },
-                { "Drag the diamond", "Depth or trill note (up/down), speed (left/right)" },
-                { "Drag the bar below", "Vibrato fade-in length" },
+            { TRK ("Pitch curves (Curve tool)"), {
+                { TRK ("Click a note"), TRK ("Add a bend point (keep dragging)") },
+                { TRK ("Drag a point"), TRK ("Move it (snaps to semitones, grid)") },
+                { TRK ("Drag a small circle"), TRK ("Change the curve shape") },
+                { TRK ("Right-click a point"), TRK ("Delete it") },
+                { TRK ("Double-click a note"), TRK ("Remove its whole curve") },
+                { TRK ("Right-click a note"), TRK ("Vibrato, trill, bends, presets") },
+                { TRK ("G  (2+ notes selected)"), TRK ("Glide: merge a line or chords into legato notes") },
+                { TRK ("Shift+click / Ctrl+drag"), TRK ("Select several notes") },
+                { TRK ("Drag the diamond"), TRK ("Depth or trill note (up/down), speed (left/right)") },
+                { TRK ("Drag the bar below"), TRK ("Vibrato fade-in length") },
             } },
-            { "View & tools", {
-                { "Wheel", "Scroll up / down" },
-                { "Shift + wheel", "Scroll left / right" },
-                { "Ctrl + wheel", "Zoom horizontally" },
-                { "Ctrl + Shift + wheel", "Zoom vertically" },
-                { "P  /  C  /  S", "Draw / Curve / Slice tool" },
-                { "Slice: click / drag", "Cut a note / cut every note the line crosses" },
-                { "Drop a MIDI file", "Add its notes (pitch bends become curves)" },
-                { "Drag the MIDI button", "Export to FL or another DAW" },
-                { "F1  or  ?", "Show this list" },
+            { TRK ("View & tools"), {
+                { TRK ("Wheel"), TRK ("Scroll up / down") },
+                { TRK ("Shift + wheel"), TRK ("Scroll left / right") },
+                { TRK ("Ctrl + wheel"), TRK ("Zoom horizontally") },
+                { TRK ("Ctrl + Shift + wheel"), TRK ("Zoom vertically") },
+                { TRK ("P  /  C  /  S"), TRK ("Draw / Curve / Slice tool") },
+                { TRK ("Slice: click / drag"), TRK ("Cut a note / cut every note the line crosses") },
+                { TRK ("Drop a MIDI file"), TRK ("Add its notes (pitch bends become curves)") },
+                { TRK ("Drag the MIDI button"), TRK ("Export to FL or another DAW") },
+                { TRK ("F1  or  ?"), TRK ("Show this list") },
             } },
         };
         return sections;
@@ -1896,10 +1906,10 @@ struct PianoRoll::ShortcutsPanel final : public juce::Component
 
         g.setColour (p.text);
         g.setFont (juce::FontOptions (18.0f, juce::Font::bold));
-        g.drawText ("Mouse & keyboard", 32, 22, 400, 26, juce::Justification::centredLeft);
+        g.drawFittedText (tr ("Mouse & keyboard"), 32, 22, 400, 26, juce::Justification::centredLeft, 1);
         g.setColour (p.muted);
         g.setFont (juce::FontOptions (12.5f));
-        g.drawText ("Click anywhere or press Esc to close", (int) cardW - 332, 22, 300, 26, juce::Justification::centredRight);
+        g.drawFittedText (tr ("Click anywhere or press Esc to close"), (int) cardW - 352, 22, 320, 26, juce::Justification::centredRight, 1);
 
         // 两栏：左栏 Notes + Selection，右栏 Editing + View & tools
         const auto& sections = getSections();
@@ -1914,17 +1924,18 @@ struct PianoRoll::ShortcutsPanel final : public juce::Component
                 const auto& s = sections[(size_t) i];
                 g.setColour (p.accent);
                 g.setFont (juce::FontOptions (12.0f, juce::Font::bold));
-                g.drawText (juce::String (s.title).toUpperCase(), juce::Rectangle<float> (x, y, colW, rowH), juce::Justification::centredLeft);
+                g.drawText (tr (s.title).toUpperCase(), juce::Rectangle<float> (x, y, colW, rowH), juce::Justification::centredLeft);
                 y += rowH + 2.0f;
 
                 for (const auto& item : s.items)
                 {
                     g.setColour (p.text);
                     g.setFont (juce::FontOptions (13.0f, juce::Font::bold));
-                    g.drawText (juce::String::fromUTF8 (item.keys), juce::Rectangle<float> (x, y, keysW, rowH), juce::Justification::centredLeft);
+                    g.drawFittedText (tr (item.keys), juce::Rectangle<float> (x, y, keysW, rowH).toNearestInt(), juce::Justification::centredLeft, 1, 0.75f);
                     g.setColour (p.muted);
                     g.setFont (juce::FontOptions (13.0f));
-                    g.drawText (item.action, juce::Rectangle<float> (x + keysW + 10.0f, y, colW - keysW - 10.0f, rowH), juce::Justification::centredLeft);
+                    g.drawFittedText (tr (item.action), juce::Rectangle<float> (x + keysW + 10.0f, y, colW - keysW - 10.0f, rowH).toNearestInt(),
+                                      juce::Justification::centredLeft, 1, 0.75f);
                     y += rowH;
                 }
 
@@ -1984,12 +1995,14 @@ struct PianoRoll::NamePrompt final : public juce::Component
 
         for (int i = 1;; ++i)
         {
-            name = "Curve " + juce::String (i);
+            name = trf ("Curve {0}", i);
 
             if (std::none_of (existing.begin(), existing.end(), [&] (const CurvePreset& p) { return p.name == name; }))
                 break;
         }
 
+        saveButton.setButtonText (tr ("Save"));
+        cancelButton.setButtonText (tr ("Cancel"));
         editor.setColour (juce::TextEditor::textColourId, owner.palette.text);
         editor.setText (name, false);
         editor.selectAll();
@@ -2014,7 +2027,7 @@ struct PianoRoll::NamePrompt final : public juce::Component
 
         g.setColour (p.text);
         g.setFont (juce::FontOptions (16.0f, juce::Font::bold));
-        g.drawText ("Save curve as preset", card.reduced (24.0f, 0.0f).withY (card.getY() + 16.0f).withHeight (24.0f),
+        g.drawText (tr ("Save curve as preset"), card.reduced (24.0f, 0.0f).withY (card.getY() + 16.0f).withHeight (24.0f),
                     juce::Justification::centredLeft);
 
         // 同名提示：保存会替换
@@ -2022,8 +2035,8 @@ struct PianoRoll::NamePrompt final : public juce::Component
         const auto existing = owner.presetLibrary.contains (name);
         g.setColour (existing ? p.warm : p.muted);
         g.setFont (juce::FontOptions (12.0f));
-        g.drawText (existing ? "A preset with this name will be replaced" : "Saved for all projects (stretches to each note)",
-                    card.reduced (24.0f, 0.0f).withY (card.getY() + 84.0f).withHeight (18.0f), juce::Justification::centredLeft);
+        g.drawFittedText (existing ? tr ("A preset with this name will be replaced") : tr ("Saved for all projects (stretches to each note)"),
+                    card.reduced (24.0f, 0.0f).withY (card.getY() + 84.0f).withHeight (18.0f).toNearestInt(), juce::Justification::centredLeft, 1, 0.8f);
     }
 
     void resized() override
@@ -2063,9 +2076,9 @@ struct PianoRoll::NamePrompt final : public juce::Component
         const auto replaced = owner.presetLibrary.contains (name);
 
         if (owner.presetLibrary.save ({ name, curve, noteLength }))
-            owner.flashMessage ((replaced ? "Replaced preset \"" : "Saved preset \"") + name + "\"");
+            owner.flashMessage (replaced ? trf ("Replaced preset \"{0}\"", name) : trf ("Saved preset \"{0}\"", name));
         else
-            owner.flashMessage ("Could not save the preset (" + owner.presetLibrary.getFile().getFullPathName() + ")");
+            owner.flashMessage (trf ("Could not save the preset ({0})", owner.presetLibrary.getFile().getFullPathName()));
 
         close();
     }
@@ -2156,7 +2169,6 @@ PianoRoll::PianoRoll (CurvableProcessor& p, const Palette& pal)
     }
 
     CurvableLookAndFeel::setStyle (helpButton, "round");
-    helpButton.setTooltip ("All mouse and keyboard actions (F1)");
     helpButton.setWantsKeyboardFocus (false);
     helpButton.onClick = [this] { showShortcuts (! shortcutsPanel->isVisible()); };
     addAndMakeVisible (helpButton);
@@ -2173,10 +2185,7 @@ PianoRoll::PianoRoll (CurvableProcessor& p, const Palette& pal)
         addAndMakeVisible (b);
     }
 
-    drawButton.setTooltip ("Draw (P): click to add notes, drag to set their length");
-    curveButton.setTooltip ("Curve (C): click a note to add bend points, drag them to bend the pitch");
     curveButton.onClick  = [this] { if (curveButton.getToggleState()) setTool (Tool::curve); };
-    sliceButton.setTooltip ("Slice (S): click a note to cut it, drag up or down to cut several");
     sliceButton.onClick  = [this] { if (sliceButton.getToggleState()) setTool (Tool::slice); };
     drawButton.onClick   = [this] { if (drawButton.getToggleState()) setTool (Tool::draw); };
     drawButton.setToggleState (true, juce::dontSendNotification);
@@ -2184,18 +2193,18 @@ PianoRoll::PianoRoll (CurvableProcessor& p, const Palette& pal)
     CurvableLookAndFeel::setStyle (snapButton, "pill");
     snapButton.setWantsKeyboardFocus (false);
     snapButton.onClick = [this] { showSnapMenu(); };
-    snapButton.setButtonText ("Snap  " + getGridName());
     addAndMakeVisible (snapButton);
 
     CurvableLookAndFeel::setStyle (bendButton, "pill");
     bendButton.setWantsKeyboardFocus (false);
-    bendButton.setTooltip ("Pitch bend range. Set your synth's bend range to the same value.");
     bendButton.onClick = [this] { showBendRangeMenu(); };
     addAndMakeVisible (bendButton);
 
     CurvableLookAndFeel::setStyle (*midiButton, "pill");
-    midiButton->setTooltip ("Drag into FL Studio (or any DAW) to export the notes with their bends. Click for more options.");
     addAndMakeVisible (*midiButton);
+
+    updateTexts();
+    i18n::addListener (this);
 
 
 
@@ -2206,9 +2215,42 @@ PianoRoll::PianoRoll (CurvableProcessor& p, const Palette& pal)
 
 PianoRoll::~PianoRoll()
 {
+    i18n::removeListener (this);
     stopTimer();
     stopPreview();
     processor.projectChanged.removeChangeListener (this);
+}
+
+void PianoRoll::updateTexts()
+{
+    helpButton.setTooltip (tr ("All mouse and keyboard actions (F1)"));
+    drawButton.setButtonText (tr ("Draw"));
+    curveButton.setButtonText (tr ("Curve"));
+    sliceButton.setButtonText (tr ("Slice"));
+    drawButton.setTooltip (tr ("Draw (P): click to add notes, drag to set their length"));
+    curveButton.setTooltip (tr ("Curve (C): click a note to add bend points, drag them to bend the pitch"));
+    sliceButton.setTooltip (tr ("Slice (S): click a note to cut it, drag up or down to cut several"));
+    snapButton.setButtonText (trf ("Snap  {0}", getGridName()));
+    bendButton.setTooltip (tr ("Pitch bend range. Set your synth's bend range to the same value."));
+    midiButton->setTooltip (tr ("Drag into FL Studio (or any DAW) to export the notes with their bends. Click for more options."));
+    refreshBendButton();
+}
+
+void PianoRoll::languageChanged()
+{
+    updateTexts();
+    resized();
+    repaint();
+}
+
+namespace
+{
+    /** 按钮文字的宽度（换了语言后按钮跟着变宽，不会把文字挤掉）。 */
+    int textWidth (juce::TextButton& b)
+    {
+        const auto font = b.getLookAndFeel().getTextButtonFont (b, juce::jmax (20, b.getHeight()));
+        return juce::GlyphArrangement::getStringWidthInt (font, b.getButtonText());
+    }
 }
 
 //==============================================================================
@@ -2244,16 +2286,27 @@ void PianoRoll::resized()
     keyboard->setBounds (keysBounds);
 
     // 底部工具栏
-    toolsBounds = bottom.removeFromLeft (236).withSizeKeepingCentre (236, 42);
+    int toolWidths[3] {};
+    int toolsWidth = 8;
+
+    for (int i = 0; i < 3; ++i)
+    {
+        auto* b = std::array<juce::TextButton*, 3> { &drawButton, &curveButton, &sliceButton }[(size_t) i];
+        toolWidths[i] = juce::jmax (76, textWidth (*b) + 26);
+        toolsWidth += toolWidths[i];
+    }
+
+    toolsBounds = bottom.removeFromLeft (toolsWidth).withSizeKeepingCentre (toolsWidth, 42);
     auto tools = toolsBounds.reduced (4);
-    const auto toolWidth = tools.getWidth() / 3;
-    drawButton.setBounds (tools.removeFromLeft (toolWidth));
-    curveButton.setBounds (tools.removeFromLeft (toolWidth));
+    drawButton.setBounds (tools.removeFromLeft (toolWidths[0]));
+    curveButton.setBounds (tools.removeFromLeft (toolWidths[1]));
     sliceButton.setBounds (tools);
 
     bottom.removeFromLeft (12);
-    snapButton.setBounds (bottom.removeFromLeft (124).withSizeKeepingCentre (124, 44));
-    bendButton.setBounds (bottom.removeFromLeft (112).withSizeKeepingCentre (112, 44));
+    const auto snapWidth = juce::jmax (124, textWidth (snapButton) + 40);
+    const auto bendWidth = juce::jmax (112, textWidth (bendButton) + 40);
+    snapButton.setBounds (bottom.removeFromLeft (snapWidth).withSizeKeepingCentre (snapWidth, 44));
+    bendButton.setBounds (bottom.removeFromLeft (bendWidth).withSizeKeepingCentre (bendWidth, 44));
     midiButton->setBounds (bottom.removeFromLeft (84).withSizeKeepingCentre (84, 44));
     helpButton.setBounds (bottom.removeFromRight (44).withSizeKeepingCentre (44, 44));
 
@@ -2299,7 +2352,7 @@ void PianoRoll::paint (juce::Graphics& g)
     const auto warning = getWarning();
     g.setColour (statusIsError || (statusText.isEmpty() && warning.isNotEmpty()) ? palette.error : palette.muted);
     g.setFont (juce::FontOptions (12.5f));
-    const auto dropText = midiDropBeat >= 0.0 ? "Drop to add the notes at bar " + juce::String ((int) (midiDropBeat / 4.0) + 1) : juce::String();
+    const auto dropText = midiDropBeat >= 0.0 ? trf ("Drop to add the notes at bar {0}", (int) (midiDropBeat / 4.0) + 1) : juce::String();
     g.drawFittedText (dropText.isNotEmpty() ? dropText : statusText.isNotEmpty() ? statusText : (warning.isNotEmpty() ? warning : getHint()),
                       statusArea, juce::Justification::centredRight, 1, 0.9f);
 }
@@ -2308,10 +2361,10 @@ juce::String PianoRoll::getHint() const
 {
     // 只提示界面上看不出来的操作：工具、吸附、力度、滚动都有可见的控件，完整列表在 ? 里
     if (tool == Tool::curve)
-        return "Click note  Add point    Right-click note  Vibrato, trill, presets    Right-click point  Delete    Alt  No snap";
+        return tr ("Click note  Add point    Right-click note  Vibrato, trill, presets    Right-click point  Delete    Alt  No snap");
 
     if (tool == Tool::slice)
-        return "Click a note  Cut it    Drag up or down  Cut several    Alt  No snap";
+        return tr ("Click a note  Cut it    Drag up or down  Cut several    Alt  No snap");
 
     // 选择没有单独的工具，所以选择的操作总是提示出来
     if (! selection.empty())
@@ -2322,12 +2375,12 @@ juce::String PianoRoll::getHint() const
         });
 
         if (hasPoints)
-            return juce::String::fromUTF8 ("Drag points  Bend    Shift+click  Add or remove    ↑↓  Transpose    Del  Delete");
+            return tr ("Drag points  Bend    Shift+click  Add or remove    \xe2\x86\x91\xe2\x86\x93  Transpose    Del  Delete");
 
-        return juce::String::fromUTF8 ("Shift+click  Add or remove    ↑↓  Transpose    Ctrl+B  Duplicate    Del  Delete");
+        return tr ("Shift+click  Add or remove    \xe2\x86\x91\xe2\x86\x93  Transpose    Ctrl+B  Duplicate    Del  Delete");
     }
 
-    return "Ctrl+drag  Box select    Shift+click  Select several    Right-click  Delete    Alt+drag  No snap";
+    return tr ("Ctrl+drag  Box select    Shift+click  Select several    Right-click  Delete    Alt+drag  No snap");
 }
 
 juce::String PianoRoll::getWarning() const
@@ -2336,12 +2389,12 @@ juce::String PianoRoll::getWarning() const
         return flashText;
 
     if (! overflowNotes.empty())
-        return juce::String ((int) overflowNotes.size()) + " notes (red outline) have to share synth copies: too many different"
-               " bends at once (limit " + juce::String (Schedule::maxVoices) + "). While they overlap, they follow the newest one's bend.";
+        return trf ("{0} notes (red outline) have to share synth copies: too many different bends at once (limit {1}). While they overlap, they follow the newest one's bend.",
+                    (int) overflowNotes.size(), Schedule::maxVoices);
 
     for (const auto& n : project.notes)
         if (n.curve.getMaxAbsOffset (n.length) > project.bendRange + 1.0e-9)
-            return "Some bends go past the bend range. Raise Bend (and your synth's range to match).";
+            return tr ("Some bends go past the bend range. Raise Bend (and your synth's range to match).");
 
     return {};
 }
@@ -2551,9 +2604,9 @@ juce::String PianoRoll::getGridName() const
 {
     for (const auto& option : gridOptions)
         if (std::abs (option.beats - grid) < 1.0e-9)
-            return option.name;
+            return tr (option.name);
 
-    return "Custom";
+    return tr ("Custom");
 }
 
 void PianoRoll::showSnapMenu()
@@ -2562,7 +2615,7 @@ void PianoRoll::showSnapMenu()
     int id = 1;
 
     for (const auto& option : gridOptions)
-        menu.addItem (id++, option.name, true, std::abs (option.beats - grid) < 1.0e-9);
+        menu.addItem (id++, tr (option.name), true, std::abs (option.beats - grid) < 1.0e-9);
 
     juce::Component::SafePointer<PianoRoll> safeThis (this);
     menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&snapButton), [safeThis] (int result)
@@ -2570,7 +2623,8 @@ void PianoRoll::showSnapMenu()
         if (auto* self = safeThis.getComponent(); self != nullptr && result > 0)
         {
             self->grid = gridOptions[result - 1].beats;
-            self->snapButton.setButtonText ("Snap  " + self->getGridName());
+            self->snapButton.setButtonText (trf ("Snap  {0}", self->getGridName()));
+            self->resized();
             self->noteArea->repaint();
         }
     });
@@ -2581,7 +2635,7 @@ void PianoRoll::refreshBendButton()
     const auto range = project.bendRange;
     const auto text = std::abs (range - std::round (range)) < 1.0e-9 ? juce::String ((int) std::round (range))
                                                                      : juce::String (range, 1);
-    bendButton.setButtonText (juce::String::fromUTF8 ("Bend \xc2\xb1") + text);
+    bendButton.setButtonText (trf ("Bend \xc2\xb1{0}", text));
 }
 
 void PianoRoll::showBendRangeMenu()
@@ -2589,8 +2643,8 @@ void PianoRoll::showBendRangeMenu()
     static constexpr int ranges[] = { 1, 2, 3, 4, 5, 7, 12, 24, 36, 48, 96 };
 
     juce::PopupMenu menu;
-    menu.addSectionHeader ("Pitch bend range (semitones)");
-    menu.addSectionHeader ("Set your synth to the same value");
+    menu.addSectionHeader (tr ("Pitch bend range (semitones)"));
+    menu.addSectionHeader (tr ("Set your synth to the same value"));
 
     for (int i = 0; i < (int) std::size (ranges); ++i)
         menu.addItem (i + 1, juce::String::fromUTF8 ("\xc2\xb1") + juce::String (ranges[i]),
@@ -2732,7 +2786,7 @@ void PianoRoll::glideSelection()
 {
     if (selection.size() < 2)
     {
-        flashMessage ("Select two or more notes or chords to glide between (Shift+click or Ctrl+drag).");
+        flashMessage (tr ("Select two or more notes or chords to glide between (Shift+click or Ctrl+drag)."));
         return;
     }
 
@@ -2744,13 +2798,13 @@ void PianoRoll::glideSelection()
 
     if (result.error == Error::oneChordOnly)
     {
-        flashMessage ("All selected notes start together. Select notes or chords at two or more different times.");
+        flashMessage (tr ("All selected notes start together. Select notes or chords at two or more different times."));
         return;
     }
 
     if (result.error == Error::chordTooLarge)
     {
-        flashMessage ("Can't glide chords with more than 12 notes.");
+        flashMessage (tr ("Can't glide chords with more than 12 notes."));
         return;
     }
 
@@ -2768,9 +2822,8 @@ void PianoRoll::glideSelection()
             needed = std::max (needed, n->curve.getMaxAbsOffset (n->length));
 
     if (needed > project.bendRange + 1.0e-9)
-        flashMessage ("This glide needs Bend " + juce::String::fromUTF8 ("\xc2\xb1")
-                      + juce::String ((int) std::ceil (needed - 1.0e-9))
-                      + " or more. Raise Bend (and your synth's range to match).");
+        flashMessage (trf ("This glide needs Bend \xc2\xb1{0} or more. Raise Bend (and your synth's range to match).",
+                           (int) std::ceil (needed - 1.0e-9)));
 }
 
 void PianoRoll::timerCallback()
@@ -2895,17 +2948,15 @@ void PianoRoll::importMidiFile (const juce::File& file, double atBeat)
 
     setSelection (added);
 
-    auto message = "Added " + juce::String ((int) imported.notes.size()) + " notes from " + file.getFileName();
-
     if (imported.bentNotes > 0)
-        message << " (" << imported.bentNotes << " with pitch bends)";
-
-    flashMessage (message);
+        flashMessage (trf ("Added {0} notes from {1} ({2} with pitch bends)", (int) imported.notes.size(), file.getFileName(), imported.bentNotes));
+    else
+        flashMessage (trf ("Added {0} notes from {1}", (int) imported.notes.size(), file.getFileName()));
 }
 
 void PianoRoll::browseForMidiImport()
 {
-    fileChooser = std::make_unique<juce::FileChooser> ("Add notes from a MIDI file",
+    fileChooser = std::make_unique<juce::FileChooser> (tr ("Add notes from a MIDI file"),
                                                        juce::File::getSpecialLocation (juce::File::userDocumentsDirectory), "*.mid;*.midi");
     juce::Component::SafePointer<PianoRoll> safeThis (this);
 
@@ -2933,20 +2984,20 @@ juce::String PianoRoll::describeExport (const midi::ExportResult& r, midi::Layou
     juce::StringArray problems;
 
     if (r.sharedNotes > 0)
-        problems.add (juce::String (r.sharedNotes) + " notes had to share a channel with a different bend");
+        problems.add (trf ("{0} notes had to share a channel with a different bend", r.sharedNotes));
 
     if (r.clippedNotes > 0)
-        problems.add (juce::String (r.clippedNotes) + " notes bend further than "
-                      + (layout == midi::Layout::mpe ? juce::String::fromUTF8 ("\xc2\xb1") + "48" : juce::String ("the bend range")));
+        problems.add (layout == midi::Layout::mpe ? trf ("{0} notes bend further than \xc2\xb1" "48", r.clippedNotes)
+                                                  : trf ("{0} notes bend further than the bend range", r.clippedNotes));
 
-    return problems.joinIntoString (", ");
+    return problems.joinIntoString (tr (", "));
 }
 
 void PianoRoll::dragMidiOut()
 {
     if (project.notes.empty())
     {
-        flashMessage ("There are no notes to export yet.");
+        flashMessage (tr ("There are no notes to export yet."));
         return;
     }
 
@@ -2971,14 +3022,14 @@ void PianoRoll::dragMidiOut()
 
     if (! out.openedOk() || ! result.file.writeTo (out))
     {
-        flashMessage ("Could not write the MIDI file (" + file.getFullPathName() + ")");
+        flashMessage (trf ("Could not write the MIDI file ({0})", file.getFullPathName()));
         return;
     }
 
     out.flush();
 
     if (const auto problems = describeExport (result, layout); problems.isNotEmpty())
-        flashMessage ("Exported, but " + problems + ".");
+        flashMessage (trf ("Exported, but {0}.", problems));
 
     juce::DragAndDropContainer::performExternalDragDropOfFiles ({ file.getFullPathName() }, false, midiButton.get());
 }
@@ -2987,12 +3038,12 @@ void PianoRoll::saveMidiAs (midi::Layout layout)
 {
     if (project.notes.empty())
     {
-        flashMessage ("There are no notes to export yet.");
+        flashMessage (tr ("There are no notes to export yet."));
         return;
     }
 
     const auto name = layout == midi::Layout::mpe ? "Curvable MPE.mid" : "Curvable.mid";
-    fileChooser = std::make_unique<juce::FileChooser> ("Save MIDI file",
+    fileChooser = std::make_unique<juce::FileChooser> (tr ("Save MIDI file"),
                                                        juce::File::getSpecialLocation (juce::File::userDocumentsDirectory).getChildFile (name),
                                                        "*.mid");
     juce::Component::SafePointer<PianoRoll> safeThis (this);
@@ -3015,12 +3066,12 @@ void PianoRoll::saveMidiAs (midi::Layout layout)
 
         if (! out.openedOk() || ! result.file.writeTo (out))
         {
-            self->flashMessage ("Could not write " + file.getFullPathName());
+            self->flashMessage (trf ("Could not write {0}", file.getFullPathName()));
             return;
         }
 
         const auto problems = describeExport (result, layout);
-        self->flashMessage ("Saved " + file.getFileName() + (problems.isNotEmpty() ? " (" + problems + ")" : juce::String()));
+        self->flashMessage (problems.isNotEmpty() ? trf ("Saved {0} ({1})", file.getFileName(), problems) : trf ("Saved {0}", file.getFileName()));
     });
 }
 
@@ -3030,14 +3081,14 @@ void PianoRoll::showMidiMenu()
     enum { importId = 1, saveVoicesId, saveMpeId, dragVoicesId, dragMpeId };
 
     juce::PopupMenu menu;
-    menu.addSectionHeader ("Drag this button into your DAW to export");
-    menu.addItem (dragVoicesId, "Drag exports one channel per voice", true, dragLayout == midi::Layout::channelPerVoice);
-    menu.addItem (dragMpeId, "Drag exports MPE", true, dragLayout == midi::Layout::mpe);
+    menu.addSectionHeader (tr ("Drag this button into your DAW to export"));
+    menu.addItem (dragVoicesId, tr ("Drag exports one channel per voice"), true, dragLayout == midi::Layout::channelPerVoice);
+    menu.addItem (dragMpeId, tr ("Drag exports MPE"), true, dragLayout == midi::Layout::mpe);
     menu.addSeparator();
-    menu.addItem (saveVoicesId, "Save MIDI file (one channel per voice)...", ! project.notes.empty());
-    menu.addItem (saveMpeId, "Save MPE MIDI file...", ! project.notes.empty());
+    menu.addItem (saveVoicesId, tr ("Save MIDI file (one channel per voice)..."), ! project.notes.empty());
+    menu.addItem (saveMpeId, tr ("Save MPE MIDI file..."), ! project.notes.empty());
     menu.addSeparator();
-    menu.addItem (importId, "Add notes from a MIDI file...");
+    menu.addItem (importId, tr ("Add notes from a MIDI file..."));
 
     juce::Component::SafePointer<PianoRoll> safeThis (this);
     menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (midiButton.get()), [safeThis] (int result)

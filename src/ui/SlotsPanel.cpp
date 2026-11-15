@@ -1,4 +1,5 @@
 #include "ui/SlotsPanel.h"
+#include "i18n/Translations.h"
 #include "ui/CurvableLookAndFeel.h"
 
 namespace curvable
@@ -17,7 +18,6 @@ struct SlotsPanel::Row final : public juce::Component
     {
         CurvableLookAndFeel::setStyle (learnButton, "chip");
         learnButton.setWantsKeyboardFocus (false);
-        learnButton.setTooltip ("Click, then move a knob in the synth to link it to this slot");
         learnButton.onClick = [this]
         {
             auto& s = owner.slots;
@@ -31,7 +31,6 @@ struct SlotsPanel::Row final : public juce::Component
 
         CurvableLookAndFeel::setStyle (clearButton, "round");
         clearButton.setWantsKeyboardFocus (false);
-        clearButton.setTooltip ("Unlink");
         clearButton.onClick = [this] { owner.slots.clear (slot); };
         addAndMakeVisible (clearButton);
     }
@@ -42,7 +41,9 @@ struct SlotsPanel::Row final : public juce::Component
         const bool learning = s.getLearningSlot() == slot;
         const bool bound = s.getBinding (slot) >= 0;
 
-        learnButton.setButtonText (learning ? "Move a knob" : "Learn");
+        learnButton.setButtonText (learning ? i18n::tr ("Move a knob") : i18n::tr ("Learn"));
+        learnButton.setTooltip (i18n::tr ("Click, then move a knob in the synth to link it to this slot"));
+        clearButton.setTooltip (i18n::tr ("Unlink"));
         learnButton.setToggleState (learning, juce::dontSendNotification);
         learnButton.setEnabled (owner.hosted.isLoaded());
         clearButton.setVisible (bound);
@@ -72,7 +73,7 @@ struct SlotsPanel::Row final : public juce::Component
 
         g.setColour (bound ? p.text : p.muted.withAlpha (0.7f));
         g.setFont (juce::FontOptions (13.5f, bound ? juce::Font::bold : juce::Font::plain));
-        g.drawText (bound ? s.getBoundName (slot) : juce::String ("Empty"),
+        g.drawText (bound ? s.getBoundName (slot) : i18n::tr ("Empty"),
                     nameArea.removeFromTop (nameArea.getHeight() - 6.0f), juce::Justification::centredLeft, true);
 
         // 当前值：细条
@@ -125,6 +126,13 @@ SlotsPanel::~SlotsPanel()
     hosted.removeChangeListener (this);
 }
 
+void SlotsPanel::updateTexts()
+{
+    closeButton.setButtonText (i18n::tr ("Close"));
+    refreshRows();
+    repaint();
+}
+
 void SlotsPanel::paletteChanged()
 {
     repaint();
@@ -174,12 +182,12 @@ void SlotsPanel::paint (juce::Graphics& g)
 
     g.setColour (palette.text);
     g.setFont (juce::FontOptions (16.0f, juce::Font::bold));
-    g.drawText ("Automation slots", title.withTrimmedRight (80), juce::Justification::centredLeft);
+    g.drawFittedText (i18n::tr ("Automation slots"), title.withTrimmedRight (96), juce::Justification::centredLeft, 1, 0.8f);
 
     g.setColour (palette.muted);
     g.setFont (juce::FontOptions (12.5f));
-    g.drawFittedText (hosted.isLoaded() ? "Automate these in FL. Learn links a slot to a synth knob; all copies follow."
-                                        : "Load a synth to link its knobs to these slots.",
+    g.drawFittedText (hosted.isLoaded() ? i18n::tr ("Automate these in FL. Learn links a slot to a synth knob; all copies follow.")
+                                        : i18n::tr ("Load a synth to link its knobs to these slots."),
                       header, juce::Justification::topLeft, 3, 0.95f);
 }
 

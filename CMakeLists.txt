@@ -67,6 +67,7 @@ set(CURVABLE_JUCE_MODEL_SOURCES
     ${PROJECT_SOURCE_DIR}/src/model/ProjectSerializer.cpp
     ${PROJECT_SOURCE_DIR}/src/model/CurvePresetLibrary.cpp
     ${PROJECT_SOURCE_DIR}/src/io/MidiExchange.cpp
+    ${PROJECT_SOURCE_DIR}/src/i18n/Translations.cpp
 )
 
 # 托管其他插件的代码（插件本体与托管冒烟测试共用）

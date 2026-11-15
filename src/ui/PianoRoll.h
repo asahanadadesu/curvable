@@ -4,6 +4,7 @@
 #include "ui/RollView.h"
 #include "model/CurvePresetLibrary.h"
 #include "io/MidiExchange.h"
+#include "i18n/Translations.h"
 #include "ui/Theme.h"
 
 #include <juce_gui_basics/juce_gui_basics.h>
@@ -31,6 +32,7 @@ class CurvableProcessor;
 */
 class PianoRoll final : public juce::Component,
                         public juce::FileDragAndDropTarget,
+                        private i18n::Listener,
                         private juce::ChangeListener,
                         private juce::ScrollBar::Listener,
                         private juce::Timer
@@ -76,6 +78,10 @@ private:
 
     void changeListenerCallback (juce::ChangeBroadcaster*) override;
     void timerCallback() override;
+
+    /** 界面语言改变：重设按钮文字和提示。 */
+    void languageChanged() override;
+    void updateTexts();
     void scrollBarMoved (juce::ScrollBar*, double newRangeStart) override;
 
     // 工程与编辑

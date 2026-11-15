@@ -18,11 +18,12 @@ target_sources(curvable_tests PRIVATE
     SliceChordTests.cpp
     TrillPresetTests.cpp
     MidiExchangeTests.cpp
+    TranslationTests.cpp
     ${CURVABLE_JUCE_MODEL_SOURCES}
 )
 
 target_include_directories(curvable_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-target_compile_definitions(curvable_tests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_compile_definitions(curvable_tests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 CURVABLE_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
 if(MSVC)
     target_compile_options(curvable_tests PRIVATE /utf-8)
 endif()

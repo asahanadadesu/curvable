@@ -1,5 +1,6 @@
 #include "ui/SynthBrowser.h"
 #include "ui/CurvableLookAndFeel.h"
+#include "i18n/Translations.h"
 
 namespace curvable
 {
@@ -23,7 +24,7 @@ namespace
 
 SynthBrowser::SynthBrowser()
 {
-    search.setTextToShowWhenEmpty ("Type to search synths...", palette.muted);
+    updateTexts();
     search.setFont (juce::FontOptions (16.0f));
     search.setIndents (10, 0);
     search.onTextChange = [this] { applyFilter(); };
@@ -48,6 +49,16 @@ SynthBrowser::SynthBrowser()
         addAndMakeVisible (c);
 }
 
+void SynthBrowser::updateTexts()
+{
+    search.setTextToShowWhenEmpty (i18n::tr ("Type to search synths..."), palette.muted);
+    browseButton.setButtonText (i18n::tr ("Browse for file..."));
+    managerButton.setButtonText (i18n::tr ("Plugin manager..."));
+    unloadButton.setButtonText (i18n::tr ("Unload synth"));
+    closeButton.setButtonText (i18n::tr ("Close"));
+    repaint();
+}
+
 SynthBrowser::~SynthBrowser()
 {
     search.removeKeyListener (this);
@@ -57,7 +68,7 @@ SynthBrowser::~SynthBrowser()
 void SynthBrowser::setPalette (const Palette& p)
 {
     palette = p;
-    search.setTextToShowWhenEmpty ("Type to search synths...", palette.muted);
+    search.setTextToShowWhenEmpty (i18n::tr ("Type to search synths..."), palette.muted);
     search.applyColourToAllText (palette.text);
     repaint();
 }
@@ -87,8 +98,8 @@ void SynthBrowser::paint (juce::Graphics& g)
         g.setColour (palette.muted);
         g.setFont (juce::FontOptions (15.0f));
         g.drawFittedText (allEntries.isEmpty()
-                              ? "No synths found.\nDrag a .vst3 file here, browse for one, or scan in the plugin manager."
-                              : "No synth matches \"" + search.getText() + "\".",
+                              ? i18n::tr ("No synths found.\nDrag a .vst3 file here, browse for one, or scan in the plugin manager.")
+                              : i18n::trf ("No synth matches \"{0}\".", search.getText()),
                           list.getBounds().reduced (20), juce::Justification::centred, 3);
     }
 }
@@ -134,8 +145,8 @@ void SynthBrowser::paintListBoxItem (int row, juce::Graphics& g, int width, int 
 
     // 右侧标签
     juce::StringArray tags;
-    if (entry.getKey() == currentKey) tags.add ("loaded");
-    if (entry.recent)                 tags.add ("recent");
+    if (entry.getKey() == currentKey) tags.add (i18n::tr ("loaded"));
+    if (entry.recent)                 tags.add (i18n::tr ("recent"));
 
     g.setFont (juce::FontOptions (12.0f));
     g.setColour (palette.accent);

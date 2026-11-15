@@ -31,6 +31,9 @@ public:
 
     void setPalette (const Palette&);
 
+    /** 界面语言改变后重设文字。 */
+    void updateTexts();
+
     /** 打开面板时调用：清空搜索并让搜索框获得焦点。 */
     void focusSearch();
 

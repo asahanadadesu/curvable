@@ -25,6 +25,9 @@ public:
     /** 配色改变后调用。 */
     void paletteChanged();
 
+    /** 界面语言改变后重设文字。 */
+    void updateTexts();
+
     static constexpr int preferredWidth = 270;
 
 private:

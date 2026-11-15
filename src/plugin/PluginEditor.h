@@ -13,11 +13,20 @@ class CurvableEditor final : public juce::AudioProcessorEditor,
                              public juce::FileDragAndDropTarget,
                              private juce::ChangeListener,
                              private juce::ComponentListener,
+                             private i18n::Listener,
                              private juce::Timer
 {
 public:
     explicit CurvableEditor (CurvableProcessor&);
     ~CurvableEditor() override;
+
+    static constexpr auto languageKey = "language";
+
+private:
+    void languageChanged() override;
+    void updateTexts();
+
+public:
 
     void paint (juce::Graphics&) override;
     void resized() override;
