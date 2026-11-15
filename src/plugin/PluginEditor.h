@@ -116,6 +116,7 @@ private:
     juce::TextButton triggerModeButton { "TRIGGER" };
     juce::TextButton offModeButton { "OFF" };
     juce::TextButton synthButton;
+    juce::TextButton mpeButton { "MPE" };
     GearButton settingsButton { palette };
 
     PianoRoll pianoRoll { processor, palette };

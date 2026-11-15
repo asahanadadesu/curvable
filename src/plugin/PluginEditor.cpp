@@ -205,6 +205,35 @@ CurvableEditor::CurvableEditor (CurvableProcessor& p)
     synthButton.onClick = [this] { browser.isVisible() ? hideSynthBrowser() : showSynthBrowser(); };
     addAndMakeVisible (synthButton);
 
+    CurvableLookAndFeel::setStyle (mpeButton, "chip");
+    mpeButton.setWantsKeyboardFocus (false);
+    mpeButton.setTooltip ("For synths with MPE turned on: one copy of the synth, every bending note on its own MIDI channel. "
+                          "Bend in the piano roll must match the synth's MPE bend range (usually 48), "
+                          "which is separate from the patch's normal bend range.");
+    mpeButton.onClick = [this]
+    {
+        const auto on = ! processor.isMpeMode();
+        processor.setMpeMode (on);
+
+        if (on)
+        {
+            // 还是默认的弯音范围（没改过）：换成大多数 MPE 音源的默认值 48
+            if (auto p = processor.getProject(); p.bendRange == Project::defaultBendRange)
+            {
+                p.bendRange = 48.0;
+                processor.setProject (std::move (p));
+            }
+
+            const auto range = processor.getProject().bendRange;
+            showMessage ("MPE on. Turn on MPE in the synth. Its MPE bend range (usually 48, not the patch's normal bend range) "
+                         "must match Bend " + juce::String (range) + ".",
+                         false);
+        }
+
+        refresh();
+    };
+    addChildComponent (mpeButton);
+
     settingsButton.setTooltip ("Settings");
     settingsButton.setWantsKeyboardFocus (false);
     settingsButton.onClick = [this] { showSettingsMenu(); };
@@ -346,6 +375,8 @@ void CurvableEditor::resized()
     settingsButton.setBounds (toolbar.removeFromRight (48).withSizeKeepingCentre (48, 48));
     toolbar.removeFromRight (6);
     synthButton.setBounds (toolbar.removeFromRight (juce::jmin (220, toolbar.getWidth())).withSizeKeepingCentre (juce::jmin (220, toolbar.getWidth()), 48));
+    toolbar.removeFromRight (6);
+    mpeButton.setBounds (toolbar.removeFromRight (juce::jmin (64, toolbar.getWidth())).withSizeKeepingCentre (juce::jmin (64, toolbar.getWidth()), 40));
 
     // 主体
     const auto body = getBodyArea();
@@ -574,7 +605,9 @@ void CurvableEditor::refresh()
         // 多个实例时显示数量；还在创建时显示进度
         const auto have = hosted.getNumInstances(), want = hosted.getWantedInstances();
 
-        if (have < want)
+        if (processor.isMpeMode())
+            synthButton.setButtonText (name + "  (MPE)");
+        else if (have < want)
             synthButton.setButtonText (name + "  (" + juce::String (have) + "/" + juce::String (want) + ")");
         else if (have > 1)
         {
@@ -587,7 +620,8 @@ void CurvableEditor::refresh()
         else
             synthButton.setButtonText (name);
 
-        synthButton.setTooltip (have > 1 || want > 1
+        synthButton.setTooltip (processor.isMpeMode() ? juce::String ("MPE mode: one copy of the synth, a MIDI channel per bending note.")
+                              : have > 1 || want > 1
                                     ? juce::String (have) + " copies of the synth let notes bend independently. "
                                       "Idle copies pause to save CPU (\"on\" = currently running)."
                                     : juce::String());
@@ -597,6 +631,8 @@ void CurvableEditor::refresh()
     else
         synthButton.setButtonText ("Load synth");
 
+    mpeButton.setVisible (hosted.isLoaded());
+    mpeButton.setToggleState (processor.isMpeMode(), juce::dontSendNotification);
     synthButton.getProperties().set ("dot", hosted.isMissing() ? "error" : (hosted.isLoaded() ? "accent" : ""));
     synthButton.repaint();
     synthTab.setButtonText (hosted.isMissing() ? "Synth (!)" : "Synth");

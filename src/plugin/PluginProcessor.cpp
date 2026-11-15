@@ -111,14 +111,20 @@ void CurvableProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mi
 
     // 2. 声部 → 实例的对应关系：新的实例准备好（或被销毁）后，先在旧的对应关系下停掉所有音符，再重新开始，
     //    避免 note on 和 note off 落在不同的实例上
+    //    MPE 模式开关时同样处理
+    const auto* schedule = scheduleExchange.acquire();
     const auto available = hosted.getNumInstances();
+    const auto mpe = mpeMode.load();
+    const auto routingChanged = available != routingCount || mpe != routedMpe;
 
-    if (available != routingCount)
+    if (routingChanged)
     {
         sketchEvents.clear();
         engine.stopVoices (sketchEvents);
         routeEvents (sketchEvents);   // 按旧的对应关系
+
         routingCount = available;
+        routedMpe = mpe;
 
         sketchEvents.clear();
         engine.resyncVoices (sketchEvents);
@@ -161,7 +167,7 @@ void CurvableProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mi
 
     // 4. 回放 Curvable 自己的音符
     sketchEvents.clear();
-    engine.process (mode, scheduleExchange.acquire(), transport, numSamples,
+    engine.process (mode, schedule, transport, numSamples,
                     hostNotes.data(), (int) hostNotes.size(), sketchEvents);
 
     if (mode == PlaybackMode::automatic && transport.isPlaying && transport.hasPosition)
@@ -190,21 +196,33 @@ void CurvableProcessor::routeEvents (const MidiEventList& events) noexcept
 {
     for (const auto& e : events.get())
     {
-        const bool hasOwnInstance = e.voice < routingCount;
+        // MPE：所有声部都在主实例上，各用一个通道（2..16）
+        const bool hasOwnInstance = routedMpe || e.voice < routingCount;
 
         // 声部的实例还没准备好：音符先交给主实例（暂时不弯），但弯音绝不能发过去，
         // 否则会把主实例上其他音符的弯音弄乱
         if (e.isPitchWheel && ! hasOwnInstance)
             continue;
 
-        auto& target = voiceMidi[(std::size_t) (hasOwnInstance ? e.voice : 0)];
+        auto& target = voiceMidi[(std::size_t) (routedMpe || ! hasOwnInstance ? 0 : e.voice)];
+        const auto channel = routedMpe ? 2 + e.voice % mpeChannels : 1;
 
         if (e.isPitchWheel)
-            target.addEvent (juce::MidiMessage::pitchWheel (1, e.wheelValue), e.sampleOffset);
+            target.addEvent (juce::MidiMessage::pitchWheel (channel, e.wheelValue), e.sampleOffset);
         else if (e.noteOn)
-            target.addEvent (juce::MidiMessage::noteOn (1, e.pitch, (juce::uint8) e.velocity), e.sampleOffset);
+            target.addEvent (juce::MidiMessage::noteOn (channel, e.pitch, (juce::uint8) e.velocity), e.sampleOffset);
         else
-            target.addEvent (juce::MidiMessage::noteOff (1, e.pitch), e.sampleOffset);
+            target.addEvent (juce::MidiMessage::noteOff (channel, e.pitch), e.sampleOffset);
+    }
+}
+
+void CurvableProcessor::setMpeMode (bool shouldBeOn)
+{
+    if (mpeMode.exchange (shouldBeOn) != shouldBeOn)
+    {
+        hosted.setWantedInstances (shouldBeOn ? 1 : wantedVoices.load());
+        markStateChanged();
+        projectChanged.sendChangeMessage(); // 界面刷新
     }
 }
 
@@ -271,6 +289,9 @@ void CurvableProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
     juce::ValueTree state (rootType);
     state.setProperty ("version", CURVABLE_VERSION_STRING, nullptr);
+
+    if (mpeMode.load())
+        state.setProperty ("mpe", true, nullptr);
     state.appendChild (ProjectSerializer::toValueTree (getProject()), nullptr);
 
     if (auto hostedState = hosted.saveState(); hostedState.isValid())
@@ -295,6 +316,7 @@ void CurvableProcessor::setStateInformation (const void* data, int sizeInBytes)
         return;
 
     undoManager.clearUndoHistory();
+    mpeMode = (bool) state.getProperty ("mpe", false);
 
     // 早期版本的状态没有 Project 节点：保持空工程
     if (auto restored = ProjectSerializer::fromValueTree (state.getChildWithName (ProjectSerializer::type)))
@@ -321,7 +343,7 @@ void CurvableProcessor::timerCallback()
         stateChanged = true;
 
     // 按工程需要的声部数准备音源实例（创建在后台进行）
-    hosted.setWantedInstances (wantedVoices.load());
+    hosted.setWantedInstances (mpeMode.load() ? 1 : wantedVoices.load());
 
     // 用户在 Curvable 或被托管的音源里改了东西：让宿主知道工程需要保存
     // （VST3 中通过 IComponentHandler2::setDirty 通知）

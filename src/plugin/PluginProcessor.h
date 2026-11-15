@@ -78,6 +78,16 @@ public:
     /** 宿主最近一次报告的速度（BPM）；界面用来显示以 Hz 计的颤音。 */
     double getHostBpm() const noexcept { return hostBpm.load(); }
 
+    /** MPE 模式：音源自己支持 MPE 时，只用一个实例，每个声部放在自己的 MIDI 通道上（2..16），
+        弯音按通道发送。保存在工程里。
+
+        不发送 MPE 配置消息（MCM）和 RPN 弯音范围：VST3 里 CC 会变成参数变化，几条 CC 的先后顺序会丢失，
+        音源可能把它们读错（例如把弯音范围重置成默认的 48）。用户需要在音源里打开 MPE，
+        并把音源的 MPE 弯音范围设成与 Curvable 的 Bend 相同。 */
+    void setMpeMode (bool);
+    bool isMpeMode() const noexcept { return mpeMode.load(); }
+    static constexpr int mpeChannels = 15;
+
 private:
     void changeListenerCallback (juce::ChangeBroadcaster*) override;
     void timerCallback() override;
@@ -111,6 +121,9 @@ private:
 
 
     void routeEvents (const MidiEventList&) noexcept;
+
+    std::atomic<bool> mpeMode { false };
+    bool routedMpe = false;     ///< 音频线程：当前按 MPE 分配声部
 
     std::atomic<int> wantedVoices { 1 }; ///< 当前工程需要的声部数（消息线程据此调整实例数）
 

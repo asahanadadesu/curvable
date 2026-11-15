@@ -1,31 +1,25 @@
 name: CI
 
+# Windows 是主要平台：每次推送都检查。
+# macOS 只是兜底，编译很慢（20 分钟到 1 小时）：每周一次、发布（v* 标签）时和手动运行时检查。
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
   workflow_dispatch:
+  schedule:
+    - cron: '0 3 * * 1' # 每周一 03:00 UTC
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: true
 
 jobs:
-  build:
-    name: ${{ matrix.name }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: Windows
-            os: windows-latest
-            pluginval_zip: pluginval_Windows.zip
-            pluginval_bin: ./pluginval.exe
-          - name: macOS
-            os: macos-latest
-            pluginval_zip: pluginval_macOS.zip
-            pluginval_bin: ./pluginval.app/Contents/MacOS/pluginval
+  windows:
+    name: Windows
+    if: github.event_name != 'schedule'
+    runs-on: windows-latest
 
     steps:
       - uses: actions/checkout@v4
@@ -44,17 +38,57 @@ jobs:
       - name: Download pluginval
         shell: bash
         run: |
-          curl -sSL -o pluginval.zip "https://github.com/Tracktion/pluginval/releases/latest/download/${{ matrix.pluginval_zip }}"
+          curl -sSL -o pluginval.zip "https://github.com/Tracktion/pluginval/releases/latest/download/pluginval_Windows.zip"
           unzip -q pluginval.zip
 
       - name: Validate VST3
         shell: bash
         run: |
-          ${{ matrix.pluginval_bin }} --strictness-level 5 --validate-in-process --skip-gui-tests \
+          ./pluginval.exe --strictness-level 5 --validate-in-process --skip-gui-tests \
+            "build/Curvable_artefacts/Release/VST3/Curvable.vst3"
+
+      - name: Upload artefacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Curvable-Windows
+          path: build/Curvable_artefacts/Release/VST3
+          if-no-files-found: ignore
+
+  macos:
+    name: macOS
+    if: >-
+      github.event_name == 'schedule' ||
+      github.event_name == 'workflow_dispatch' ||
+      startsWith(github.ref, 'refs/tags/v')
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Configure
+        run: cmake -B build -S . -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Unit tests
+        run: ctest --test-dir build -C Release --output-on-failure
+
+      - name: Download pluginval
+        shell: bash
+        run: |
+          curl -sSL -o pluginval.zip "https://github.com/Tracktion/pluginval/releases/latest/download/pluginval_macOS.zip"
+          unzip -q pluginval.zip
+
+      - name: Validate VST3
+        shell: bash
+        run: |
+          ./pluginval.app/Contents/MacOS/pluginval --strictness-level 5 --validate-in-process --skip-gui-tests \
             "build/Curvable_artefacts/Release/VST3/Curvable.vst3"
 
       - name: Validate AU
-        if: runner.os == 'macOS'
         shell: bash
         run: |
           mkdir -p ~/Library/Audio/Plug-Ins/Components
@@ -65,7 +99,7 @@ jobs:
       - name: Upload artefacts
         uses: actions/upload-artifact@v4
         with:
-          name: Curvable-${{ matrix.name }}
+          name: Curvable-macOS
           path: |
             build/Curvable_artefacts/Release/VST3
             build/Curvable_artefacts/Release/AU
