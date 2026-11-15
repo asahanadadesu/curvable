@@ -18,7 +18,7 @@ class CurvableProcessor;
     拖动段中间的小圆圈改变弯曲形状；右键节点删除；双击音符去掉整条曲线。
 
     鼠标（与 FL Studio 习惯一致）：
-    - Draw 工具：在空白处单击添加音符，按住拖动设置时长；Select 工具：拖出框选
+    - Draw 工具：在空白处单击添加音符，按住拖动设置时长；任何工具下 Ctrl 拖动框选，Shift 单击加选 / 减选
     - 拖动音符移动（时间 + 音高），拖动音符右端改变时长；Alt 拖动不吸附
     - 右键（或右键拖过）删除音符；Shift 单击加选 / 取消选中；Ctrl 在空白处拖动总是框选
     - 滚轮：上下滚动；Shift + 滚轮：左右滚动；Ctrl + 滚轮：水平缩放；Ctrl + Shift + 滚轮：垂直缩放
@@ -26,7 +26,7 @@ class CurvableProcessor;
 
     键盘：Delete 删除；Ctrl+A 全选；Ctrl+C / X / V 复制 / 剪切 / 粘贴；Ctrl+B 或 Ctrl+D 复制一份到后面；
     Ctrl+Z / Ctrl+Y 撤销 / 重做；↑↓ 移调（Shift：八度）；←→ 按网格移动（Shift：一小节）；
-    P / E 切换 Draw / Select 工具；Esc 取消选择。
+    P / C / S 切换 Draw / Curve / Slice 工具；Esc 取消选择。
 */
 class PianoRoll final : public juce::Component,
                         private juce::ChangeListener,
@@ -53,7 +53,7 @@ public:
     /** 显示 / 隐藏全部操作说明（也可以按 F1 或 ?）。 */
     void showShortcuts (bool shouldShow);
 
-    enum class Tool { draw, select, curve, slice };
+    enum class Tool { draw, curve, slice };
 
 private:
     struct Keyboard;
@@ -128,7 +128,7 @@ private:
 
     juce::ScrollBar hScroll { false }, vScroll { true };
 
-    juce::TextButton drawButton { "Draw" }, selectButton { "Select" }, curveButton { "Curve" }, sliceButton { "Slice" };
+    juce::TextButton drawButton { "Draw" }, curveButton { "Curve" }, sliceButton { "Slice" };
     juce::TextButton snapButton, bendButton, helpButton { "?" };
 
     RollView view;
