@@ -51,6 +51,44 @@ TEST_CASE ("moving a group clamps at time zero and pitch range as a whole", "[ed
     CHECK (findNote (target, a)->pitch == 60);  // 未选中的不动
 }
 
+TEST_CASE ("trimming a note's start keeps its end and the curve where it was", "[editing]")
+{
+    Project original;
+    const auto a = original.addNote (1.0, 2.0, 60, 0.8f);
+    const auto b = original.addNote (2.0, 1.0, 64, 0.8f);
+    auto& curve = findNote (original, a)->curve;
+    insertCurvePoint (curve, 0.0, 0.0);
+    insertCurvePoint (curve, 1.0, 2.0);
+
+    // 缩短：切掉开头，剩下的部分音高不变
+    auto target = original;
+    trimNoteStarts (target, original, { a }, 0.5, minNoteLength);
+    const auto* n = findNote (target, a);
+    CHECK_THAT (n->start, WithinAbs (1.5, 1e-12));
+    CHECK_THAT (n->length, WithinAbs (1.5, 1e-12));
+    for (double beat : { 1.6, 2.0, 2.5, 2.9 })
+        CHECK_THAT (n->curve.evaluate (beat - n->start), WithinAbs (curve.evaluate (beat - 1.0), 1e-9));
+
+    // 拉长：节点后移，新的开头保持第一个节点的音高
+    trimNoteStarts (target, original, { a }, -0.75, minNoteLength);
+    n = findNote (target, a);
+    CHECK_THAT (n->start, WithinAbs (0.25, 1e-12));
+    CHECK_THAT (n->length, WithinAbs (2.75, 1e-12));
+    CHECK_THAT (n->curve.evaluate (0.3), WithinAbs (0.0, 1e-9));
+    for (double beat : { 1.0, 1.5, 2.0, 2.9 })
+        CHECK_THAT (n->curve.evaluate (beat - n->start), WithinAbs (curve.evaluate (beat - 1.0), 1e-9));
+
+    // 整组不早于 0 拍；每个音符至少保留 minLength，终点不动
+    trimNoteStarts (target, original, { a, b }, -5.0, minNoteLength);
+    CHECK_THAT (findNote (target, a)->start, WithinAbs (0.0, 1e-12));
+    CHECK_THAT (findNote (target, b)->start, WithinAbs (1.0, 1e-12));
+
+    trimNoteStarts (target, original, { a, b }, 1.5, 0.25);
+    CHECK_THAT (findNote (target, a)->start, WithinAbs (2.5, 1e-12));
+    CHECK_THAT (findNote (target, b)->start, WithinAbs (2.75, 1e-12));
+    CHECK_THAT (findNote (target, b)->getEnd(), WithinAbs (3.0, 1e-12));
+}
+
 TEST_CASE ("drag operations are relative to the original, not cumulative", "[editing]")
 {
     NoteId a, b, c;
@@ -140,4 +178,28 @@ TEST_CASE ("range queries and selection cleanup", "[editing]")
     deleteNotes (p, { b });
     CHECK (existingOnly (p, { a, b }) == IdSet { a });
     CHECK (findNote (p, b) == nullptr);
+}
+
+TEST_CASE ("duplicating in place leaves copies under the originals", "[editing]")
+{
+    NoteId a, b, c;
+    auto p = threeNotes (a, b, c);
+    findNote (p, b)->curve.points = { { 0.0, 0.0 }, { 0.5, 2.0 } };
+
+    const auto copies = duplicateInPlace (p, { b, c });
+    REQUIRE (copies.size() == 2);
+    CHECK (p.notes.size() == 5);
+
+    for (auto id : copies)
+    {
+        const auto* copy = findNote (p, id);
+        const auto* original = copy->pitch == 64 ? findNote (p, b) : findNote (p, c);
+        CHECK (copy->start == original->start);
+        CHECK (copy->length == original->length);
+        CHECK (copy->curve == original->curve);
+    }
+
+    CHECK (canSlice (*findNote (p, a), 0.5));
+    CHECK_FALSE (canSlice (*findNote (p, a), 0.0));
+    CHECK_FALSE (canSlice (*findNote (p, a), 1.0));
 }

@@ -24,11 +24,15 @@ namespace
         const juce::Identifier offset   { "st" };
         const juce::Identifier tension  { "tension" };
         const juce::Identifier bendRange { "bendRange" };
+        const juce::Identifier loopStart { "loopStart" };
+        const juce::Identifier loopEnd   { "loopEnd" };
+        const juce::Identifier loopOn    { "loopOn" };
         const juce::Identifier vibrato  { "Vibrato" };
         const juce::Identifier depth    { "depth" };
         const juce::Identifier rate     { "rate" };
         const juce::Identifier sync     { "sync" };
         const juce::Identifier fade     { "fade" };
+        const juce::Identifier envelope { "envelope" };
         const juce::Identifier wholeNote { "wholeNote" };
         const juce::Identifier vib      { "vib" };
         const juce::Identifier shape    { "shape" };
@@ -66,6 +70,13 @@ juce::ValueTree ProjectSerializer::toValueTree (const Project& project)
     tree.setProperty (ids::mode, modeToString (project.mode), nullptr);
     tree.setProperty (ids::nextId, idToString (project.nextId), nullptr);
     tree.setProperty (ids::bendRange, project.bendRange, nullptr);
+
+    if (project.hasLoop())
+    {
+        tree.setProperty (ids::loopStart, project.loopStart, nullptr);
+        tree.setProperty (ids::loopEnd, project.loopEnd, nullptr);
+        tree.setProperty (ids::loopOn, project.loopOn, nullptr);
+    }
 
     for (const auto& n : project.notes)
     {
@@ -108,6 +119,18 @@ namespace
         vib.setProperty (ids::rate, v.rate, nullptr);
         vib.setProperty (ids::sync, v.sync, nullptr);
         vib.setProperty (ids::fade, v.fade, nullptr);
+
+        // 深度包络："x:level x:level ..."
+        if (v.numEnvelopePoints >= 2)
+        {
+            juce::StringArray pts;
+
+            for (int i = 0; i < v.numEnvelopePoints; ++i)
+                pts.add (juce::String (v.envelopePoints[(size_t) i].x, 6) + ":" + juce::String (v.envelopePoints[(size_t) i].level, 6));
+
+            vib.setProperty (ids::envelope, pts.joinIntoString (" "), nullptr);
+        }
+
         return vib;
     }
 
@@ -121,6 +144,16 @@ namespace
         v.rate      = vib.getProperty (ids::rate, defaults.rate);
         v.sync      = vib.getProperty (ids::sync, false);
         v.fade      = vib.getProperty (ids::fade, defaults.fade);
+
+        std::vector<Vibrato::EnvelopePoint> envelope;
+
+        for (const auto& token : juce::StringArray::fromTokens (vib.getProperty (ids::envelope).toString(), " ", ""))
+            if (token.containsChar (':'))
+                envelope.push_back ({ token.upToFirstOccurrenceOf (":", false, false).getDoubleValue(),
+                                      token.fromFirstOccurrenceOf (":", false, false).getDoubleValue() });
+
+        v.setEnvelope (envelope);
+        v.normalise();
         return v;
     }
 }
@@ -198,6 +231,16 @@ std::optional<Project> ProjectSerializer::fromValueTree (const juce::ValueTree& 
     const auto bendRange = (double) tree.getProperty (ids::bendRange, Project::defaultBendRange);
     project.bendRange = std::isfinite (bendRange) ? std::clamp (bendRange, Project::minBendRange, Project::maxBendRange)
                                                   : Project::defaultBendRange;
+
+    const auto loopStart = (double) tree.getProperty (ids::loopStart, 0.0);
+    const auto loopEnd = (double) tree.getProperty (ids::loopEnd, 0.0);
+
+    if (std::isfinite (loopStart) && std::isfinite (loopEnd) && loopStart >= 0.0 && loopEnd > loopStart)
+    {
+        project.loopStart = loopStart;
+        project.loopEnd = loopEnd;
+        project.loopOn = tree.getProperty (ids::loopOn, false);
+    }
 
     NoteId maxId = 0;
 

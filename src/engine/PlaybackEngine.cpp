@@ -32,10 +32,12 @@ void PlaybackEngine::resyncVoices (MidiEventList& out)
 {
     player.resetWheels (0, out);
 
-    // AUTO：下一块会按"跳转"处理，从宿主位置补发；TRIGGER：立即从当前位置补发
+    // AUTO：下一块会按"跳转"处理，从宿主位置补发；TRIGGER、插件内播放：立即从当前位置补发
     autoRunning = false;
 
-    if (currentMode == PlaybackMode::trigger && trigger.active)
+    if (internal.active)
+        player.start (internal.position, 0, out);
+    else if (currentMode == PlaybackMode::trigger && trigger.active)
         player.start (trigger.position, 0, out);
 }
 
@@ -45,6 +47,55 @@ void PlaybackEngine::stopEverything (int sampleOffset, MidiEventList& out)
     autoRunning = false;
     trigger.active = false;
     trigger.pitch = -1;
+    internal.active = false;
+}
+
+void PlaybackEngine::startInternal (double fromBeat, double loopStart, double loopEnd) noexcept
+{
+    internalRequest = { true, fromBeat, loopStart, loopEnd };
+}
+
+void PlaybackEngine::beginInternal (MidiEventList& out)
+{
+    const auto request = internalRequest;
+    internalRequest.pending = false;
+    auto fromBeat = request.from;
+    const auto loopStart = request.loopStart, loopEnd = request.loopEnd;
+    stopEverything (0, out);
+
+    internal.loop = loopEnd - loopStart >= minCueLength;
+
+    if (internal.loop)
+    {
+        internal.start = std::max (0.0, loopStart);
+        internal.end = loopEnd;
+
+        if (fromBeat < internal.start || fromBeat >= internal.end)
+            fromBeat = internal.start;
+    }
+    else
+    {
+        internal.start = 0.0;
+        internal.end = schedule != nullptr ? schedule->length : 0.0;
+
+        if (fromBeat >= internal.end - minCueLength)
+            return; // 后面没有内容了
+    }
+
+    internal.active = true;
+    internal.position = std::max (0.0, fromBeat);
+    player.start (internal.position, 0, out);
+}
+
+void PlaybackEngine::stopInternal (MidiEventList& out)
+{
+    internalRequest.pending = false;
+
+    if (internal.active)
+    {
+        player.stopAll (0, out);
+        internal.active = false;
+    }
 }
 
 //==============================================================================
@@ -63,7 +114,8 @@ void PlaybackEngine::process (PlaybackMode mode, const Schedule* newSchedule, co
     if (newSchedule != schedule)
     {
         schedule = newSchedule;
-        const auto beat = currentMode == PlaybackMode::trigger ? trigger.position : expectedPpq;
+        const auto beat = internal.active ? internal.position
+                        : currentMode == PlaybackMode::trigger ? trigger.position : expectedPpq;
         player.setSchedule (schedule, beat, 0, out);
 
         // 内容变了，触发区间（例如"到内容结尾"）可能随之变化
@@ -78,6 +130,30 @@ void PlaybackEngine::process (PlaybackMode mode, const Schedule* newSchedule, co
 
     const auto bpm = transport.bpm > 0.0 && std::isfinite (transport.bpm) ? transport.bpm : fallbackBpm;
     const auto samplesPerBeat = sampleRate * 60.0 / bpm;
+
+    if (internalRequest.pending)
+        beginInternal (out);
+
+    if (internal.active)
+    {
+        // 宿主接手：AUTO 下宿主开始播放，TRIGGER 下来了触发音符
+        const auto hostStarted = currentMode == PlaybackMode::automatic && transport.isPlaying && transport.hasPosition;
+        const auto triggered = currentMode == PlaybackMode::trigger
+                               && std::any_of (hostNotes, hostNotes + numHostNotes, [] (const HostNote& n) { return n.isOn; });
+
+        if (! hostStarted && ! triggered)
+        {
+            // 不循环时内容可能变短了
+            if (! internal.loop && schedule != nullptr)
+                internal.end = schedule->length;
+
+            internal.active = advanceRegion (internal.position, internal.start, internal.end, internal.loop,
+                                             0, numSamples, samplesPerBeat, out);
+            return;
+        }
+
+        stopInternal (out);
+    }
 
     switch (currentMode)
     {
@@ -179,37 +255,57 @@ void PlaybackEngine::startTrigger (int pitch, int sampleOffset, MidiEventList& o
 
 void PlaybackEngine::advanceTrigger (int fromSample, int toSample, double samplesPerBeat, MidiEventList& out)
 {
-    if (! trigger.active || toSample <= fromSample)
-        return;
+    if (trigger.active)
+        advanceRegion (trigger.position, trigger.cueStart, trigger.cueEnd, true, fromSample, toSample, samplesPerBeat, out);
+}
 
-    if (trigger.cueEnd - trigger.cueStart < minCueLength)
-        return;
+bool PlaybackEngine::advanceRegion (double& position, double start, double end, bool loop,
+                                    int fromSample, int toSample, double samplesPerBeat, MidiEventList& out)
+{
+    if (toSample <= fromSample)
+        return true;
+
+    // 区间太短：循环时什么也不做，不循环时直接结束
+    if (end - start < minCueLength)
+    {
+        if (loop)
+            return true;
+
+        player.stopAll (fromSample, out);
+        return false;
+    }
 
     double sample = fromSample;
 
     while (sample < toSample - 1.0e-9)
     {
         const auto beatsLeftInBlock = (toSample - sample) / samplesPerBeat;
-        const auto segmentEnd = std::min (trigger.position + beatsLeftInBlock, trigger.cueEnd);
-        const auto segmentBeats = segmentEnd - trigger.position;
+        const auto segmentEnd = std::min (position + beatsLeftInBlock, end);
+        const auto segmentBeats = segmentEnd - position;
 
-        player.render (trigger.position, segmentEnd, sample, fromSample, toSample, samplesPerBeat, out);
+        player.render (position, segmentEnd, sample, fromSample, toSample, samplesPerBeat, out);
 
         sample += segmentBeats * samplesPerBeat;
-        trigger.position = segmentEnd;
+        position = segmentEnd;
 
-        // 到达段落终点：停止仍在响的音符，回到起点继续
-        if (trigger.position >= trigger.cueEnd - 1.0e-9)
+        // 到达终点：停止仍在响的音符；循环时回到起点继续
+        if (position >= end - 1.0e-9)
         {
-            const auto loopSample = std::clamp (SketchPlayer::toSampleIndex (sample), fromSample, toSample - 1);
-            player.stopAll (loopSample, out);
-            trigger.position = trigger.cueStart;
-            player.start (trigger.position, loopSample, out);
+            const auto atSample = std::clamp (SketchPlayer::toSampleIndex (sample), fromSample, toSample - 1);
+            player.stopAll (atSample, out);
+
+            if (! loop)
+                return false;
+
+            position = start;
+            player.start (position, atSample, out);
         }
 
         if (segmentBeats <= 0.0)
             break; // 防御：不应发生
     }
+
+    return true;
 }
 
 } // namespace curvable

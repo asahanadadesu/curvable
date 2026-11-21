@@ -264,3 +264,100 @@ TEST_CASE ("bend and release returns to the note, clear removes everything", "[s
     CHECK (c.points.empty());
     CHECK_FALSE (c.hasVibrato());
 }
+
+TEST_CASE ("a drawn depth envelope shapes the vibrato and matches the old fade-in until edited", "[vibrato]")
+{
+    constexpr double runLength = 4.0;
+    auto v = makeVibrato (0.5, 2.0, true, 1.0);
+
+    // 没画过：由 fade 换算出来的点，求值与原来的渐强完全一致
+    const auto implied = v.getEnvelope (runLength);
+    REQUIRE (implied.size() == 3);
+    CHECK_THAT (implied[1].x, WithinAbs (0.25, 1e-12));
+
+    auto drawn = v;
+    drawn.setEnvelope (implied);
+    REQUIRE (drawn.hasDrawnEnvelope());
+    for (double x = 0.0; x <= runLength; x += 0.07)
+        CHECK_THAT (drawn.envelope (x, runLength), WithinAbs (v.envelope (x, runLength), 1e-9));
+
+    // 加一个点，拖到 0.25 半音：那里的深度就是 0.25，整段的深度不变
+    const auto index = editing::insertEnvelopePoint (drawn, runLength, 0.75);
+    REQUIRE (index == 2);
+    editing::moveEnvelopePoint (drawn, runLength, index, 0.75, 0.25);
+    CHECK_THAT (drawn.depth, WithinAbs (0.5, 1e-12));
+    CHECK_THAT (drawn.envelope (3.0, runLength) * drawn.depth, WithinAbs (0.25, 1e-9));
+
+    // 拖得比整段还深：整段加深，其他点的实际深度不变
+    editing::moveEnvelopePoint (drawn, runLength, index, 0.75, 1.0);
+    CHECK_THAT (drawn.depth, WithinAbs (1.0, 1e-12));
+    CHECK_THAT (drawn.envelope (3.0, runLength) * drawn.depth, WithinAbs (1.0, 1e-9));
+    CHECK_THAT (drawn.envelope (1.0, runLength) * drawn.depth, WithinAbs (0.5, 1e-9));
+
+    // 首尾的点不能删、不能左右移
+    CHECK_FALSE (editing::removeEnvelopePoint (drawn, runLength, 0));
+    editing::moveEnvelopePoint (drawn, runLength, 0, 0.5, 0.0);
+    CHECK (drawn.getEnvelope (runLength).front().x == 0.0);
+    CHECK (editing::removeEnvelopePoint (drawn, runLength, index));
+    CHECK (drawn.getEnvelope (runLength).size() == 3);
+
+    // 保存后读回来，包络不变（音频线程用的固定数组，用不到的位置保持默认值）
+    Project p;
+    const auto id = p.addNote (0.0, runLength, 60, 0.8f);
+    drawn.wholeNote = true;
+    editing::findNote (p, id)->curve.vibrato = drawn;
+    const auto restored = ProjectSerializer::fromValueTree (ProjectSerializer::toValueTree (p));
+    REQUIRE (restored.has_value());
+    CHECK (editing::findNote (*restored, id)->curve.vibrato == drawn);
+
+    // trill 没有深度包络
+    auto trill = drawn;
+    trill.setShape (Vibrato::Shape::trill);
+    CHECK (trill.getEnvelope (runLength).empty());
+    CHECK_FALSE (trill.hasDrawnEnvelope());
+}
+
+TEST_CASE ("pulling up vibrato adds a fresh run, and a silent run is still a run until removed", "[vibrato]")
+{
+    PitchCurve c;
+    c.points = { { 0.0, 0.0 }, { 1.0, 0.0 }, { 2.0, 0.0 } };
+
+    // 相邻段已有颤音（画过包络）：新的一段沿用速度，深度和包络从头开始，不会改到相邻的段
+    editing::addVibrato (c, 0, 0.6);
+    auto& first = *c.points[0].vibrato;
+    first.rate = 7.0;
+    first.setEnvelope ({ { 0.0, 1.0 }, { 0.5, 0.2 }, { 1.0, 1.0 } });
+
+    editing::addVibrato (c, 1, 0.0);
+    REQUIRE (c.points[1].vibrato.has_value());
+    CHECK (c.points[1].vibrato->rate == 7.0);
+    CHECK (c.points[1].vibrato->depth == 0.0);
+    CHECK_FALSE (c.points[1].vibrato->hasDrawnEnvelope());
+    CHECK (c.points[0].vibrato->depth == 0.6);
+
+    // 深度为 0 的段：没有声音，但仍然是一段（可以编辑）
+    const auto runs = c.getVibratoRuns (3.0);
+    REQUIRE (runs.size() == 2);
+    CHECK (runs[1].firstPoint == 1);
+    CHECK (c.vibratoAt (1.5, 3.0, 0.5) == 0.0);
+
+    editing::removeSilentVibrato (c);
+    CHECK_FALSE (c.points[1].vibrato.has_value());
+    CHECK (c.points[0].vibrato.has_value());
+
+    // 整个音符
+    PitchCurve whole;
+    editing::addVibrato (whole, -1, 0.0);
+    CHECK (whole.vibrato.wholeNote);
+    CHECK (whole.getVibratoRuns (2.0).size() == 1);
+    CHECK_FALSE (whole.hasVibrato());
+    editing::removeSilentVibrato (whole);
+    CHECK_FALSE (whole.vibrato.wholeNote);
+
+    // 包络插值：点之间直线连接，两端之外保持端点的值
+    const std::vector<Vibrato::EnvelopePoint> pts { { 0.0, 0.0 }, { 0.5, 1.0 }, { 1.0, 0.5 } };
+    CHECK_THAT (Vibrato::levelAt (pts, 0.25), WithinAbs (0.5, 1e-12));
+    CHECK_THAT (Vibrato::levelAt (pts, 0.75), WithinAbs (0.75, 1e-12));
+    CHECK (Vibrato::levelAt (pts, 1.5) == 0.5);
+    CHECK (Vibrato::levelAt ({}, 0.3) == 1.0);
+}

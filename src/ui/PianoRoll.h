@@ -16,19 +16,20 @@ class CurvableProcessor;
 
 /** Curvable 的卷帘编辑器：琴键、小节标尺、音符编辑区、力度区和底部工具栏。
 
-    Curve 工具：单击音符添加弯音节点并拖动；拖动节点移动（吸附半音和网格，Alt 不吸附）；
-    拖动段中间的小圆圈改变弯曲形状；右键节点删除；双击音符去掉整条曲线。
-
-    鼠标（与 FL Studio 习惯一致）：
-    - Draw 工具：在空白处单击添加音符，按住拖动设置时长；任何工具下 Ctrl 拖动框选，Shift 单击加选 / 减选
-    - 拖动音符移动（时间 + 音高），拖动音符右端改变时长；Alt 拖动不吸附
-    - 右键（或右键拖过）删除音符；Shift 单击加选 / 取消选中；Ctrl 在空白处拖动总是框选
+    没有工具切换，所有操作都在同一个编辑模式里（与 FL Studio 习惯一致的地方保持一致）：
+    - 空白处单击添加音符，按住拖动设置时长；Ctrl 拖动框选
+    - 拖动音符移动（时间 + 音高），拖动右端改变时长，拖动左端改变起点；Alt 拖动不吸附
+    - Shift 单击加选 / 取消选中；Shift 拖动复制
+    - 悬停或选中的音符显示节点，直接拖动（吸附半音和网格，Alt 不吸附）；拖段中间的小圆圈改变弯曲形状；右键节点删除
+    - 双击音符加一个节点（按住接着拖）
+    - 悬停某一段时，上方出现琥珀线，往上拖加颤音；之后拖菱形手柄、竖线调整参数
+    - 右键单击音符：菜单（颤音、Trill、Bend 手法、预设、Glide、切开、删除）；右键拖过：删除
+    - 按住 S：单击音符切开，上下拖动切开竖线经过的音符
     - 滚轮：上下滚动；Shift + 滚轮：左右滚动；Ctrl + 滚轮：水平缩放；Ctrl + Shift + 滚轮：垂直缩放
     - Alt + 滚轮（在音符上）：调整力度
 
     键盘：Delete 删除；Ctrl+A 全选；Ctrl+C / X / V 复制 / 剪切 / 粘贴；Ctrl+B 或 Ctrl+D 复制一份到后面；
-    Ctrl+Z / Ctrl+Y 撤销 / 重做；↑↓ 移调（Shift：八度）；←→ 按网格移动（Shift：一小节）；
-    P / C / S 切换 Draw / Curve / Slice 工具；Esc 取消选择。
+    Ctrl+Z / Ctrl+Y 撤销 / 重做；↑↓ 移调（Shift：八度）；←→ 按网格移动（Shift：一小节）；G 滑音；Esc 取消选择。
 */
 class PianoRoll final : public juce::Component,
                         public juce::FileDragAndDropTarget,
@@ -44,6 +45,8 @@ public:
     void paint (juce::Graphics&) override;
     void resized() override;
     bool keyPressed (const juce::KeyPress&) override;
+    bool keyStateChanged (bool isKeyDown) override;
+    void focusLost (FocusChangeType) override;
     void mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails&) override;
     void paintOverChildren (juce::Graphics&) override;
 
@@ -62,10 +65,14 @@ public:
 
     void stopPreview();
 
+    /** 插件内播放：▶ 或 Space。从起点（单击标尺设置）开始；循环打开时在循环区里循环。 */
+    void togglePlayback();
+
+    /** Space 交给 FL（设置菜单），不在插件里播放。全局设置。 */
+    static constexpr auto spaceToHostKey = "spaceToHost";
+
     /** 显示 / 隐藏全部操作说明（也可以按 F1 或 ?）。 */
     void showShortcuts (bool shouldShow);
-
-    enum class Tool { draw, curve, slice };
 
 private:
     struct Keyboard;
@@ -75,6 +82,7 @@ private:
     struct ShortcutsPanel;
     struct NamePrompt;
     struct MidiButton;
+    struct TransportButton;
 
     void changeListenerCallback (juce::ChangeBroadcaster*) override;
     void timerCallback() override;
@@ -105,8 +113,19 @@ private:
     /** 需要用户注意的问题（声部不够、弯音超出范围）；没有时为空。 */
     juce::String getWarning() const;
 
-    // 工具与吸附
-    void setTool (Tool);
+    // 插件内播放
+    void startPlayback();
+    void stopPlayback();
+    void setStartBeat (double beat);
+    /** 设置循环区（end <= start 表示去掉）；正在插件内播放时从当前位置接着播。 */
+    void setLoop (double start, double end, bool on);
+    void toggleLoop();
+    /** 跟随播放头：播放头走出视野时翻页。 */
+    void followPlayhead (double beat);
+    void refreshTransportButtons();
+
+    // 切开（按住 S）与吸附
+    void setSlicing (bool);
     void showSnapMenu();
     void showBendRangeMenu();
     void refreshBendButton();
@@ -118,6 +137,9 @@ private:
     void copySelection (bool cut);
     void paste();
     void duplicateSelection();
+
+    /** 在 atBeat 处切开 ids 中的音符，选中切开后的两半。 */
+    void sliceAndSelect (const editing::IdSet& ids, double atBeat);
 
     /** 把选中的音符合并成一个音符，用滑音连起来（G）。 */
     void glideSelection();
@@ -159,9 +181,10 @@ private:
 
     juce::ScrollBar hScroll { false }, vScroll { true };
 
-    juce::TextButton drawButton { "Draw" }, curveButton { "Curve" }, sliceButton { "Slice" };
     juce::TextButton snapButton, bendButton, helpButton { "?" };
     std::unique_ptr<MidiButton> midiButton;
+    std::unique_ptr<TransportButton> playButton, loopButton, followButton;
+    juce::Rectangle<int> transportBounds;
     std::unique_ptr<juce::FileChooser> fileChooser;
     double midiDropBeat = -1.0; ///< 正在拖入 MIDI 文件时对齐到的位置；没有拖入时为 -1
 
@@ -171,11 +194,13 @@ private:
     Project project;          ///< 当前工程的本地副本（显示用）
     editing::IdSet selection;
     editing::IdSet overflowNotes; ///< 因为声部不够而与别的音符共用音源实例的音符
-    Tool tool = Tool::draw;
+    bool slicing = false;     ///< 按住 S：单击或拖动切开音符（只有一个编辑模式，没有工具切换）
     double grid = 0.25;       ///< 吸附网格（拍）；0 表示不吸附
     double defaultLength = 1.0;
     double lastMouseBeat = -1.0;
     double playheadBeat = -1.0;
+    double startBeat = 0.0;   ///< 插件内播放的起点（单击标尺设置；停止后播放头回到这里）
+    bool follow = true;       ///< 跟随播放头（全局设置）
 
     bool dragging = false;
     Project dragOrigin;
@@ -188,7 +213,7 @@ private:
     juce::String statusText;
     bool statusIsError = false;
 
-    juce::Rectangle<int> panelBounds, keysBounds, toolsBounds;
+    juce::Rectangle<int> panelBounds, keysBounds;
     juce::Image chrome; ///< 缓存的阴影背景
 
     static inline std::vector<Note> clipboard;

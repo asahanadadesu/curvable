@@ -164,6 +164,28 @@ struct PianoRoll::Ruler final : public juce::Component
             }
         }
 
+        // 循环区：标尺上方的一条（关着时变淡）
+        if (const auto loop = loopRange(); ! loop.isEmpty())
+        {
+            const auto on = owner.project.loopOn || dragKind == DragKind::newLoop;
+            const auto x0 = (float) v.beatToX (loop.getStart()), x1 = (float) v.beatToX (loop.getEnd());
+            const auto band = juce::Rectangle<float> (x0, 1.0f, juce::jmax (2.0f, x1 - x0), 6.0f);
+            g.setColour (p.warm.withAlpha (on ? 0.9f : 0.3f));
+            g.fillRoundedRectangle (band, 3.0f);
+            g.fillRect (x0, 1.0f, 2.0f, h - 1.0f);
+            g.fillRect (x1 - 2.0f, 1.0f, 2.0f, h - 1.0f);
+        }
+
+        // 起点：空心三角（不在播放时）
+        if (owner.playheadBeat < 0.0)
+        {
+            const auto x = (float) v.beatToX (owner.startBeat);
+            juce::Path marker;
+            marker.addTriangle (x - 5.0f, h - 9.0f, x + 5.0f, h - 9.0f, x, h - 2.0f);
+            g.setColour (p.accent.withAlpha (0.8f));
+            g.strokePath (marker, juce::PathStrokeType (1.4f));
+        }
+
         if (owner.playheadBeat >= 0.0)
         {
             const auto x = (float) v.beatToX (owner.playheadBeat);
@@ -174,7 +196,141 @@ struct PianoRoll::Ruler final : public juce::Component
         }
     }
 
+    /** 显示的循环区：正在拖出新的循环区时是拖出的范围。 */
+    juce::Range<double> loopRange() const
+    {
+        if (dragKind == DragKind::newLoop || dragKind == DragKind::loopStart || dragKind == DragKind::loopEnd)
+            return dragLoop;
+
+        return owner.project.hasLoop() ? juce::Range<double> (owner.project.loopStart, owner.project.loopEnd) : juce::Range<double>();
+    }
+
+    double snapped (float x, bool noSnap) const
+    {
+        const auto beat = juce::jmax (0.0, owner.view.xToBeat (x));
+        return noSnap ? beat : editing::snapNearest (beat, owner.grid > 0.0 ? owner.grid : 1.0);
+    }
+
+    /** 单击：设置起点（播放中从那里接着播）；拖动：拖出循环区；拖循环区两端：改变它；双击：去掉循环区。 */
+    void mouseDown (const juce::MouseEvent& e) override
+    {
+        owner.grabKeyboardFocus();
+        dragKind = DragKind::none;
+
+        if (e.mods.isPopupMenu())
+        {
+            showMenu();
+            return;
+        }
+
+        if (owner.project.hasLoop())
+        {
+            const auto& v = owner.view;
+
+            if (std::abs (e.position.x - (float) v.beatToX (owner.project.loopStart)) <= 5.0f)
+                dragKind = DragKind::loopStart;
+            else if (std::abs (e.position.x - (float) v.beatToX (owner.project.loopEnd)) <= 5.0f)
+                dragKind = DragKind::loopEnd;
+
+            if (dragKind != DragKind::none)
+                dragLoop = { owner.project.loopStart, owner.project.loopEnd };
+        }
+    }
+
+    void mouseDrag (const juce::MouseEvent& e) override
+    {
+        const auto noSnap = e.mods.isAltDown();
+        const auto minimum = owner.grid > 0.0 ? owner.grid : 0.25;
+
+        if (dragKind == DragKind::none && e.getDistanceFromDragStart() > 4 && ! e.mods.isPopupMenu())
+            dragKind = DragKind::newLoop;
+
+        const auto beat = snapped (e.position.x, noSnap);
+
+        switch (dragKind)
+        {
+            case DragKind::newLoop:
+            {
+                const auto a = snapped ((float) e.getMouseDownX(), noSnap);
+                dragLoop = { juce::jmin (a, beat), juce::jmax (a, beat) };
+                break;
+            }
+            case DragKind::loopStart: dragLoop.setStart (juce::jmin (beat, dragLoop.getEnd() - minimum)); break;
+            case DragKind::loopEnd:   dragLoop.setEnd (juce::jmax (beat, dragLoop.getStart() + minimum)); break;
+            case DragKind::none:      break;
+        }
+
+        repaint();
+        owner.repaintContent();
+    }
+
+    void mouseUp (const juce::MouseEvent& e) override
+    {
+        const auto kind = std::exchange (dragKind, DragKind::none);
+
+        if (e.mods.isPopupMenu())
+            return;
+
+        if (kind == DragKind::none)
+        {
+            if (e.getNumberOfClicks() < 2)
+                owner.setStartBeat (snapped (e.position.x, e.mods.isAltDown()));
+        }
+        else if (dragLoop.getLength() > 1.0e-6)
+        {
+            owner.setLoop (dragLoop.getStart(), dragLoop.getEnd(), kind == DragKind::newLoop || owner.project.loopOn);
+        }
+
+        repaint();
+        owner.repaintContent();
+    }
+
+    void mouseDoubleClick (const juce::MouseEvent& e) override
+    {
+        if (! e.mods.isPopupMenu() && owner.project.hasLoop())
+            owner.setLoop (0.0, 0.0, false);
+    }
+
+    void mouseMove (const juce::MouseEvent& e) override
+    {
+        const auto& v = owner.view;
+        const auto nearEdge = owner.project.hasLoop()
+                              && (std::abs (e.position.x - (float) v.beatToX (owner.project.loopStart)) <= 5.0f
+                                  || std::abs (e.position.x - (float) v.beatToX (owner.project.loopEnd)) <= 5.0f);
+        setMouseCursor (nearEdge ? juce::MouseCursor::LeftRightResizeCursor : juce::MouseCursor::PointingHandCursor);
+    }
+
+    void showMenu()
+    {
+        enum { loopSelectionId = 1, toggleLoopId, clearLoopId };
+        juce::PopupMenu menu;
+        menu.addItem (loopSelectionId, tr ("Loop the selected notes"), ! owner.selection.empty());
+        menu.addItem (toggleLoopId, tr ("Loop playback"), owner.project.hasLoop(), owner.project.loopOn);
+        menu.addItem (clearLoopId, tr ("Remove the loop"), owner.project.hasLoop());
+
+        juce::Component::SafePointer<PianoRoll> safeOwner (&owner);
+        menu.showMenuAsync (juce::PopupMenu::Options().withMousePosition(), [safeOwner] (int result)
+        {
+            auto* o = safeOwner.getComponent();
+
+            if (o == nullptr)
+                return;
+
+            switch (result)
+            {
+                case loopSelectionId: o->toggleLoop(); break; // 有选中音符时：循环选区
+                case toggleLoopId:    o->setLoop (o->project.loopStart, o->project.loopEnd, ! o->project.loopOn); break;
+                case clearLoopId:     o->setLoop (0.0, 0.0, false); break;
+                default: break;
+            }
+        });
+    }
+
+    enum class DragKind { none, newLoop, loopStart, loopEnd };
+
     PianoRoll& owner;
+    DragKind dragKind = DragKind::none;
+    juce::Range<double> dragLoop;
 };
 
 //==============================================================================
@@ -183,22 +339,39 @@ struct PianoRoll::NoteArea final : public juce::Component
 {
     explicit NoteArea (PianoRoll& o) : owner (o) {}
 
-    enum class Mode { none, move, resize, marquee, erase, curvePoint, curveTension, vibratoShape, vibratoFade, slice };
+    enum class Mode { none, move, resize, trimStart, marquee, erase, rightPending, shiftPending,
+                      curvePoint, curveTension, vibratoDepth, envelopePoint, vibratoSpeed, slice };
+
+    /** 颤音的控件。 */
+    enum class VibratoControl { none, depthLine, envelopePoint, addLine, speedPost };
 
     struct Hit
     {
         NoteId id = 0;
-        bool edge = false;
+        int edge = 0; ///< -1 = 左端（改起点），1 = 右端（改时长），0 = 本体
     };
 
-    /** 曲线工具下鼠标位置命中的东西。 */
+    /** 音符上的节点和手柄。 */
     struct CurveHit
     {
         NoteId id = 0;
         int point = -1;   ///< 节点下标
-        int segment = -1; ///< 弯曲手柄所在的段（起点节点的下标）
-        int vibratoHandle = 0; ///< 1 = 颤音深度 / 速度手柄，2 = 颤音渐强手柄
-        int vibratoRun = -1;   ///< 手柄属于第几段颤音（vibratoHandles 的下标）
+        int segment = -1; ///< 弯曲手柄所在的段（起点节点的下标）；琥珀线：所在的段（-1 = 整个音符）
+        VibratoControl control = VibratoControl::none;
+        int vibratoRun = -1;    ///< 控件属于第几段颤音（getVibratoRuns 的下标）
+        int envelopePoint = -1; ///< 深度包络点的下标
+
+        bool operator== (const CurveHit&) const = default;
+    };
+
+    /** 还没有颤音的一段（没有节点时是整个音符）：悬停时在它上方画一条琥珀线，往上拖就加颤音。 */
+    struct VibratoLine
+    {
+        NoteId id = 0;
+        int segment = -1;          ///< 起点节点的下标；-1 = 整个音符
+        double start = 0.0, end = 0.0; ///< 相对音符起点（拍）
+
+        bool operator== (const VibratoLine&) const = default;
     };
 
     //==============================================================================
@@ -299,7 +472,8 @@ struct PianoRoll::NoteArea final : public juce::Component
             if (std::abs (pos.y - centreY (*it, t)) <= rh * 0.5f)
             {
                 const auto edgeWidth = juce::jlimit (3.0f, 8.0f, r.getWidth() * 0.3f);
-                return { it->id, pos.x >= r.getRight() - edgeWidth };
+                const auto edge = pos.x >= r.getRight() - edgeWidth ? 1 : (pos.x <= r.getX() + edgeWidth ? -1 : 0);
+                return { it->id, edge };
             }
         }
 
@@ -334,117 +508,212 @@ struct PianoRoll::NoteArea final : public juce::Component
         return juce::Point<float> ((float) owner.view.beatToX (n.start + mid), pointY (n, n.curve.evaluate (mid)));
     }
 
-    /** 颤音手柄（每一段颤音各一组，参数各自独立）：深度 / 速度手柄放在完全起振后的第一个波峰上（高度为完整深度）；
-        渐强手柄是本体下方的一条小竖线，位置表示渐强结束的地方。 */
-    struct VibratoHandles
+    /** 颤音的控件（每一段颤音各一组，参数各自独立），画在音符本体上方，只在显示手柄的音符上出现：
+        - 琥珀线：离本体上沿的高度 = 那个时刻的深度（一行 = 一个半音）。上下拖改变整段的深度（trill：相邻音的音程）；
+          深度为 0 的地方正好是"往上拉加颤音"的那条线；
+        - 线上的包络点（只有颤音有）：深度随时间的变化。拖动改变那一时刻的深度，双击线加点，右键删点；
+        - 段中间的蓝色竖杆和顶上的横条：左右拖改变速度。 */
+
+    /** 这一段颤音的琥珀线在 time（相对音符起点）处的 y。pts 是它的包络点（trill 为空）。 */
+    float depthLineY (const Note& n, const PitchCurve::Run& run, const std::vector<Vibrato::EnvelopePoint>& pts, double time) const
     {
-        juce::Point<float> shape, fade;
-        bool hasFade = true;  ///< trill 没有渐强
-        PitchCurve::Run run;
-        double peak = 0.0; ///< 波峰相对这一段开头的位置（拍）
-    };
-
-    std::vector<VibratoHandles> vibratoHandles (const Note& n) const
-    {
-        std::vector<VibratoHandles> result;
-
-        for (const auto& run : n.curve.getVibratoRuns (n.length))
-            if (const auto h = vibratoHandlesFor (n, run))
-                result.push_back (*h);
-
-        return result;
+        const auto u = (time - run.start) / std::max (1.0e-9, run.length());
+        const auto depth = std::abs (run.settings.depth) * Vibrato::levelAt (pts, u);
+        return vibratoLineY (n, time) - (float) (depth * owner.view.rowHeight);
     }
 
-    std::optional<VibratoHandles> vibratoHandlesFor (const Note& n, const PitchCurve::Run& run) const
+    juce::Point<float> envelopePointPosition (const Note& n, const PitchCurve::Run& run, const Vibrato::EnvelopePoint& pt) const
     {
-        const auto& vib = run.settings;
-        const auto bpc = vib.beatsPerCycle (secondsPerBeat());
-
-        if (bpc <= 0.0)
-            return std::nullopt;
-
-        const auto release = std::min (0.125, run.length() * 0.25);
-        const auto trill = vib.shape == Vibrato::Shape::trill;
-
-        // 颤音：完全起振后的第一个波峰；trill：第一次换到相邻音的正中
-        const auto firstPeak = trill ? 0.75 : 0.25;
-        const auto k = trill ? 0.0 : std::max (0.0, std::ceil (vib.fade / bpc - 0.25));
-        auto peak = (k + firstPeak) * bpc;
-
-        if (peak > run.length() - release)
-            peak = std::min (firstPeak * bpc, run.length() * 0.5);
-
-        const auto& v = owner.view;
-        const auto fadeTime = run.start + std::min (vib.fade, run.length());
-
-        VibratoHandles h;
-        h.hasFade = ! trill;
-        h.run = run;
-        h.peak = peak;
-        h.shape = { (float) v.beatToX (n.start + run.start + peak), pointY (n, n.curve.evaluate (run.start + peak) + vib.depth) };
-        h.fade = { (float) v.beatToX (n.start + fadeTime), pointY (n, n.curve.evaluate (fadeTime)) + bodyThickness() * 0.5f + 8.0f };
-        return h;
+        const auto t = run.start + pt.x * run.length();
+        return { (float) owner.view.beatToX (n.start + t), vibratoLineY (n, t) - (float) (std::abs (run.settings.depth) * pt.level * owner.view.rowHeight) };
     }
 
-    /** 显示弯曲手柄、颤音手柄的音符。Curve 工具：悬停或正在编辑的音符；
-        Draw 工具：悬停的选中音符，或者唯一选中的音符。 */
+    /** 段太窄时不显示速度手柄（放不下，也容易挡住别的控件）。 */
+    bool showsSpeedHandle (const PitchCurve::Run& run) const
+    {
+        return run.length() * owner.view.pixelsPerBeat >= 36.0;
+    }
+
+    /** 速度手柄：浮在这一段中间、琥珀线上方的蓝色小胶囊（里面左右两个小箭头，表示左右拖）。 */
+    juce::Rectangle<float> speedBar (const Note& n, const PitchCurve::Run& run, const std::vector<Vibrato::EnvelopePoint>& pts) const
+    {
+        const auto mid = (run.start + run.end) * 0.5;
+        const auto x = (float) owner.view.beatToX (n.start + mid);
+        return juce::Rectangle<float> (26.0f, 14.0f).withCentre ({ x, depthLineY (n, run, pts, mid) - 16.0f });
+    }
+
+    /** 这一段颤音的控件在 pos 处命中的东西（control 为 none 表示没有命中）。 */
+    CurveHit vibratoControlHit (const Note& n, const PitchCurve::Run& run, int runIndex, juce::Point<float> pos) const
+    {
+        const auto pts = run.settings.getEnvelope (run.length());
+        CurveHit hit { n.id };
+        hit.vibratoRun = runIndex;
+
+        for (int i = (int) pts.size(); --i >= 0;)
+        {
+            if (envelopePointPosition (n, run, pts[(size_t) i]).getDistanceFrom (pos) <= 6.0f)
+            {
+                hit.control = VibratoControl::envelopePoint;
+                hit.envelopePoint = i;
+                return hit;
+            }
+        }
+
+        if (showsSpeedHandle (run) && speedBar (n, run, pts).expanded (3.0f).contains (pos))
+        {
+            hit.control = VibratoControl::speedPost;
+            return hit;
+        }
+
+        const auto t = owner.view.xToBeat (pos.x) - n.start;
+
+        if (t >= run.start && t <= run.end && std::abs (pos.y - depthLineY (n, run, pts, t)) <= 4.5f)
+        {
+            hit.control = VibratoControl::depthLine;
+            return hit;
+        }
+
+        return {};
+    }
+
+    /** 显示弯曲手柄、颤音手柄的音符：悬停（或正在编辑）的音符；没有时是唯一选中的音符。切开时不显示。 */
     NoteId handleNote() const
     {
-        if (owner.tool == Tool::curve)
-            return focusNote;
-
-        if (owner.tool != Tool::draw)
+        if (owner.slicing)
             return 0;
 
-        if (focusNote != 0 && owner.selection.count (focusNote) != 0)
+        if (focusNote != 0)
             return focusNote;
 
         return owner.selection.size() == 1 ? *owner.selection.begin() : 0;
+    }
+
+    /** 节点画出来并且可以直接拖的音符：选中的音符和显示手柄的音符。 */
+    bool showsPoints (const Note& n) const
+    {
+        return ! owner.slicing && (n.id == handleNote() || owner.selection.count (n.id) != 0);
+    }
+
+    /** time（相对音符起点）所在、还没有颤音的一段。太短（画不下）时没有。 */
+    std::optional<VibratoLine> vibratoLineAt (const Note& n, double time) const
+    {
+        const auto& c = n.curve;
+
+        if (c.vibrato.wholeNote || time < 0.0 || time > n.length)
+            return std::nullopt;
+
+        VibratoLine line { n.id, -1, 0.0, n.length };
+
+        if (! c.points.empty())
+        {
+            const auto seg = c.segmentAt (time);
+
+            if (seg < 0 || c.points[(size_t) seg].vibrato)
+                return std::nullopt;
+
+            line.segment = seg;
+            line.start = c.points[(size_t) seg].time;
+            line.end = seg + 1 < (int) c.points.size() ? c.points[(size_t) seg + 1].time : n.length;
+            line.end = std::min (line.end, n.length);
+        }
+
+        if ((line.end - line.start) * owner.view.pixelsPerBeat < 14.0)
+            return std::nullopt;
+
+        return line;
+    }
+
+    /** 琥珀线在 time 处的 y：本体上沿再往上一点。 */
+    float vibratoLineY (const Note& n, double time) const
+    {
+        // 按主曲线算（不含颤音）：放大后颤音画成本体的弯曲时，线也不能跟着波形起伏
+        return pointY (n, n.curve.evaluate (juce::jlimit (0.0, n.length, time))) - bodyThickness() * 0.5f - 7.0f;
+    }
+
+    /** 鼠标在悬停音符上方的琥珀线、颤音控件附近（或在它们与本体之间）时，仍然算悬停在这个音符上。 */
+    bool nearVibratoLine (const Note& n, juce::Point<float> pos) const
+    {
+        const auto t = owner.view.xToBeat (pos.x) - n.start;
+
+        if (t < 0.0 || t > n.length || pos.y > centreY (n, t))
+            return false;
+
+        if (hoverLine && hoverLine->id == n.id && t >= hoverLine->start && t <= hoverLine->end
+            && pos.y >= vibratoLineY (n, t) - 7.0f)
+            return true;
+
+        for (const auto& run : n.curve.getVibratoRuns (n.length))
+        {
+            if (t < run.start || t > run.end)
+                continue;
+
+            const auto pts = run.settings.getEnvelope (run.length());
+            const auto top = std::min (depthLineY (n, run, pts, t), speedBar (n, run, pts).getY()) - 8.0f;
+
+            if (pos.y >= top)
+                return true;
+        }
+
+        return false;
     }
 
     /** 某个音符上的节点和手柄。 */
     CurveHit curveHitOn (const Note& n, juce::Point<float> pos) const
     {
         for (int i = (int) n.curve.points.size(); --i >= 0;)
-            if (const auto p = pointPosition (n, n.curve.points[(size_t) i]); p && p->getDistanceFrom (pos) <= 7.0f)
+            if (const auto pt = pointPosition (n, n.curve.points[(size_t) i]); pt && pt->getDistanceFrom (pos) <= 7.0f)
                 return { n.id, i, -1 };
 
-        // 弯曲手柄、颤音手柄只在正在编辑的音符上显示
+        // 弯曲手柄、颤音控件只在显示手柄的音符上
         if (n.id != handleNote())
             return {};
 
-        const auto handles = vibratoHandles (n);
-
-        for (int i = 0; i < (int) handles.size(); ++i)
+        // 颤音控件画在本体上方，常常压在上一行的音符上：控件很细，所以优先于别的音符
         {
-            const auto& h = handles[(size_t) i];
+            const auto runs = n.curve.getVibratoRuns (n.length);
 
-            if (h.shape.getDistanceFrom (pos) <= 7.0f)
-                return { n.id, -1, -1, 1, i };
-
-            if (h.hasFade && h.fade.getDistanceFrom (pos) <= 7.0f)
-                return { n.id, -1, -1, 2, i };
+            for (int r = 0; r < (int) runs.size(); ++r)
+                if (const auto hit = vibratoControlHit (n, runs[(size_t) r], r, pos); hit.control != VibratoControl::none)
+                    return hit;
         }
 
         for (int i = 0; i + 1 < (int) n.curve.points.size(); ++i)
             if (const auto h = handlePosition (n, i); h && h->getDistanceFrom (pos) <= 6.0f)
                 return { n.id, -1, i };
 
+        // 琥珀线：往上拖加颤音
+        if (hoverLine && hoverLine->id == n.id)
+        {
+            const auto t = owner.view.xToBeat (pos.x) - n.start;
+
+            if (t >= hoverLine->start && t <= hoverLine->end && std::abs (pos.y - vibratoLineY (n, t)) <= 5.0f)
+                return { n.id, -1, hoverLine->segment, VibratoControl::addLine };
+        }
+
         return {};
     }
 
-    /** Draw 工具：选中音符上的节点和手柄（不含音符本体）。音符右端的节点只有左半边算节点，
-        右半边留给拖动改变时长。 */
-    CurveHit selectedCurveHit (juce::Point<float> pos) const
+    /** 可以直接拖的节点和手柄（不含音符本体）：先看显示手柄的音符，再看选中的音符。
+        音符两端的节点只有朝里的半边算节点，朝外的半边留给拖动改变起点、时长。 */
+    CurveHit editableCurveHit (juce::Point<float> pos) const
     {
+        if (owner.slicing)
+            return {};
+
         auto test = [&] (const Note& n) -> CurveHit
         {
             auto hit = curveHitOn (n, pos);
 
             if (hit.point >= 0)
-                if (const auto p = pointPosition (n, n.curve.points[(size_t) hit.point]); p && pos.x >= p->x)
-                    if (const auto noteHit = hitTest (pos); noteHit.id == n.id && noteHit.edge)
+            {
+                if (const auto p = pointPosition (n, n.curve.points[(size_t) hit.point]))
+                {
+                    const auto noteHit = hitTest (pos);
+
+                    if (noteHit.id == n.id && ((noteHit.edge > 0 && pos.x >= p->x) || (noteHit.edge < 0 && pos.x <= p->x)))
                         return {};
+                }
+            }
 
             return hit;
         };
@@ -457,26 +726,6 @@ struct PianoRoll::NoteArea final : public juce::Component
             if (owner.selection.count (it->id) != 0)
                 if (const auto hit = test (*it); hit.id != 0)
                     return hit;
-
-        return {};
-    }
-
-    CurveHit curveHitTest (juce::Point<float> pos) const
-    {
-        const auto& notes = owner.project.notes;
-        auto test = [&] (const Note& n) { return curveHitOn (n, pos); };
-
-        // 先看正在编辑的音符（它的节点画在最上面）
-        if (const auto* focus = editing::findNote (owner.project, focusNote))
-            if (const auto hit = test (*focus); hit.id != 0)
-                return hit;
-
-        for (auto it = notes.rbegin(); it != notes.rend(); ++it)
-            if (const auto hit = test (*it); hit.id != 0)
-                return hit;
-
-        if (const auto hit = hitTest (pos); hit.id != 0)
-            return { hit.id, -1, -1 };
 
         return {};
     }
@@ -539,9 +788,16 @@ struct PianoRoll::NoteArea final : public juce::Component
         drawLines (1.0, p.line);
         drawLines (4.0, p.lineStrong);
 
+        // 循环区外面稍微压暗（循环打开时）
+        if (const auto loop = owner.ruler->loopRange(); ! loop.isEmpty() && (owner.project.loopOn || owner.ruler->dragKind == Ruler::DragKind::newLoop))
+        {
+            const auto x0 = (float) v.beatToX (loop.getStart()), x1 = (float) v.beatToX (loop.getEnd());
+            g.setColour (p.text.withAlpha (0.045f));
+            g.fillRect (0.0f, 0.0f, juce::jmax (0.0f, x0), h);
+            g.fillRect (x1, 0.0f, juce::jmax (0.0f, w - x1), h);
+        }
+
         // 音符：凸起的胶囊，沿自身曲线弯曲；颜色表示力度；选中的加暖色描边
-        const bool curveTool = owner.tool == Tool::curve;
-        const bool drawTool = owner.tool == Tool::draw;
         const auto handleId = handleNote();
         const Note* focus = nullptr;
 
@@ -560,8 +816,8 @@ struct PianoRoll::NoteArea final : public juce::Component
             if (n.id == handleId)
                 focus = &n;
 
-            // Draw 工具下，选中音符的节点也可以直接拖动
-            const auto showPoints = curveTool || (drawTool && owner.selection.count (n.id) != 0 && ! n.curve.points.empty());
+            // 悬停和选中的音符显示节点，可以直接拖动
+            const auto showPoints = showsPoints (n) && ! n.curve.points.empty();
 
             // 显示节点时，弯过的音符在原音高处画一条细线作参照
             if (showPoints && ! n.curve.isFlat())
@@ -612,9 +868,12 @@ struct PianoRoll::NoteArea final : public juce::Component
                 paintCurvePoints (g, n, false);
         }
 
-        // 正在编辑的音符：节点画在最上面，并显示弯曲手柄
-        if (focus != nullptr && (curveTool || ! focus->curve.points.empty()))
+        // 正在编辑的音符：节点画在最上面，并显示弯曲手柄、颤音手柄和加颤音的琥珀线
+        if (focus != nullptr)
+        {
+            paintVibratoLine (g, *focus);
             paintCurvePoints (g, *focus, true);
+        }
 
         paintSliceLine (g);
 
@@ -648,6 +907,10 @@ struct PianoRoll::NoteArea final : public juce::Component
         for (const auto& run : n.curve.getVibratoRuns (n.length))
         {
             const auto& vib = run.settings;
+
+            if (vib.depth == 0.0)
+                continue;
+
             const auto cyclePx = vib.beatsPerCycle (spb) * v.pixelsPerBeat;
             const auto x0 = juce::jmax (-2.0f, (float) v.beatToX (n.start + run.start));
             const auto x1 = juce::jmin ((float) getWidth() + 2.0f, (float) v.beatToX (n.start + run.end));
@@ -728,52 +991,137 @@ struct PianoRoll::NoteArea final : public juce::Component
         g.drawText (text, box, juce::Justification::centred, false);
     }
 
-    void paintVibratoHandles (juce::Graphics& g, const Note& n) const
+    /** 沿 [t0, t1]（相对音符起点，拍）每 2 像素取一个点连成的线，只取看得见的部分。 */
+    juce::Path sampledLine (const Note& n, double t0, double t1, const std::function<float (double)>& yAt) const
     {
-        for (const auto& h : vibratoHandles (n))
-            paintVibratoHandle (g, n, h);
+        const auto& v = owner.view;
+        const auto x0 = juce::jmax ((float) v.beatToX (n.start + t0), -4.0f);
+        const auto x1 = juce::jmin ((float) v.beatToX (n.start + t1), (float) getWidth() + 4.0f);
+        juce::Path line;
+
+        if (x1 <= x0)
+            return line;
+
+        auto timeAt = [&] (float x) { return juce::jlimit (t0, t1, v.xToBeat (x) - n.start); };
+        line.startNewSubPath (x0, yAt (timeAt (x0)));
+
+        for (auto x = x0 + 2.0f; x < x1; x += 2.0f)
+            line.lineTo (x, yAt (timeAt (x)));
+
+        line.lineTo (x1, yAt (timeAt (x1)));
+        return line;
     }
 
-    void paintVibratoHandle (juce::Graphics& g, const Note& n, const VibratoHandles& handle) const
+    /** 先描一圈背景色的边，在任何底色上都看得清。 */
+    void strokeWithHalo (juce::Graphics& g, const juce::Path& path, juce::Colour colour, float thickness) const
     {
-        const auto* h = &handle;
+        const juce::PathStrokeType::JointStyle joint = juce::PathStrokeType::curved;
+        g.setColour (owner.palette.bg.withAlpha (0.8f));
+        g.strokePath (path, juce::PathStrokeType (thickness + 2.0f, joint, juce::PathStrokeType::rounded));
+        g.setColour (colour);
+        g.strokePath (path, juce::PathStrokeType (thickness, joint, juce::PathStrokeType::rounded));
+    }
+
+    /** 悬停的那一段上方的琥珀线（还没有颤音的段才有）。拖动时不画（波纹已经出来了）。 */
+    void paintVibratoLine (juce::Graphics& g, const Note& n) const
+    {
+        if (! hoverLine || hoverLine->id != n.id || mode != Mode::none)
+            return;
+
+        const auto hovered = hoverControl.control == VibratoControl::addLine;
+        const auto line = sampledLine (n, hoverLine->start, hoverLine->end, [&] (double t) { return vibratoLineY (n, t); });
+        strokeWithHalo (g, line, owner.palette.warm.withAlpha (hovered ? 1.0f : 0.75f), hovered ? 4.0f : 2.5f);
+    }
+
+    void paintVibratoHandles (juce::Graphics& g, const Note& n) const
+    {
+        const auto runs = n.curve.getVibratoRuns (n.length);
+
+        for (int r = 0; r < (int) runs.size(); ++r)
+            paintVibratoControls (g, n, runs[(size_t) r], r);
+    }
+
+    void paintVibratoControls (juce::Graphics& g, const Note& n, const PitchCurve::Run& run, int runIndex) const
+    {
         const auto& p = owner.palette;
-        const auto& vib = h->run.settings;
+        const auto& v = owner.view;
+        const auto& vib = run.settings;
+        const auto trill = vib.shape == Vibrato::Shape::trill;
+        const auto pts = vib.getEnvelope (run.length());
 
-        // 正在拖的是这一段的手柄（按组成这一段的节点认出来）
-        const auto isDragged = n.id == focusNote && dragRun.firstPoint == h->run.firstPoint;
-        const auto shapeActive = isDragged && mode == Mode::vibratoShape;
-        const auto fadeActive = isDragged && mode == Mode::vibratoFade;
+        const auto x0 = (float) v.beatToX (n.start + run.start);
+        const auto x1 = (float) v.beatToX (n.start + run.end);
 
-        // 深度 / 速度：菱形
-        juce::Path diamond;
-        diamond.addRectangle (-4.5f, -4.5f, 9.0f, 9.0f);
-        diamond.applyTransform (juce::AffineTransform::rotation (juce::MathConstants<float>::pi * 0.25f).translated (h->shape));
-        g.setColour (p.bg);
-        g.strokePath (diamond, juce::PathStrokeType (3.0f));
-        g.setColour (shapeActive ? p.warm : p.accent);
-        g.fillPath (diamond);
+        if (x1 - x0 < 4.0f)
+            return;
 
-        // 渐强：本体下方的小竖线（trill 没有）
-        if (h->hasFade)
+        // 正在拖、悬停的控件
+        const auto dragged = owner.dragging && n.id == focusNote && runIndex == dragRunIndex;
+        const auto draggedControl = ! dragged ? VibratoControl::none
+                                  : mode == Mode::vibratoDepth ? VibratoControl::depthLine
+                                  : mode == Mode::envelopePoint ? VibratoControl::envelopePoint
+                                  : mode == Mode::vibratoSpeed ? VibratoControl::speedPost : VibratoControl::none;
+        auto isActive = [&] (VibratoControl control, int point = -1)
         {
-            const auto bar = juce::Rectangle<float> (4.0f, 12.0f).withCentre (h->fade);
+            if (draggedControl == control && (point < 0 || point == dragEnvelopePoint))
+                return true;
+
+            return ! owner.dragging && hoverControl.id == n.id && hoverControl.vibratoRun == runIndex
+                   && hoverControl.control == control && (point < 0 || hoverControl.envelopePoint == point);
+        };
+
+        // 琥珀线
+        const auto line = sampledLine (n, run.start, run.end, [&] (double t) { return depthLineY (n, run, pts, t); });
+        strokeWithHalo (g, line, p.warm, isActive (VibratoControl::depthLine) ? 3.5f : 2.5f);
+
+        // 包络点
+        for (int i = 0; i < (int) pts.size(); ++i)
+        {
+            const auto pos = envelopePointPosition (n, run, pts[(size_t) i]);
+            const auto size = isActive (VibratoControl::envelopePoint, i) ? 10.0f : 7.0f;
+            const auto dot = juce::Rectangle<float> (size, size).withCentre (pos);
             g.setColour (p.bg);
-            g.fillRoundedRectangle (bar.expanded (1.5f), 2.5f);
-            g.setColour (fadeActive ? p.warm : p.accent);
-            g.fillRoundedRectangle (bar, 2.0f);
+            g.fillEllipse (dot.expanded (1.5f));
+            g.setColour (p.warm);
+            g.fillEllipse (dot);
         }
 
-        if (shapeActive)
+        // 速度：浮在琥珀线上方的蓝色小胶囊，里面左右两个小箭头
+        if (showsSpeedHandle (run))
         {
-            const auto depth = vib.shape == Vibrato::Shape::trill ? trf ("Trill {0}", formatSemitones (vib.depth))
-                                                                  : juce::String (vib.depth, 2) + " st";
-            const auto above = vib.depth >= 0.0 || vib.shape != Vibrato::Shape::trill;
-            paintValueLabel (g, depth + "   " + formatRate (vib), h->shape.translated (0.0f, above ? -16.0f : 16.0f), p.text);
+            const auto speedActive = isActive (VibratoControl::speedPost);
+            const auto pill = speedActive ? speedBar (n, run, pts).expanded (1.5f) : speedBar (n, run, pts);
+            const auto radius = pill.getHeight() * 0.5f;
+
+            g.setColour (p.bg.withAlpha (0.85f));
+            g.fillRoundedRectangle (pill.expanded (1.5f), radius + 1.5f);
+            g.setColour (p.accent.withAlpha (speedActive ? 1.0f : 0.9f));
+            g.fillRoundedRectangle (pill, radius);
+
+            const auto c = pill.getCentre();
+            const auto a = 3.2f;         // 箭头半高
+            const auto gap = 2.2f;       // 两个箭头离中心的距离
+            juce::Path arrows;
+            arrows.addTriangle (c.x - gap, c.y - a, c.x - gap, c.y + a, c.x - gap - a * 1.25f, c.y);
+            arrows.addTriangle (c.x + gap, c.y - a, c.x + gap, c.y + a, c.x + gap + a * 1.25f, c.y);
+            g.setColour (p.textOn (p.accent));
+            g.fillPath (arrows);
         }
 
-        if (fadeActive)
-            paintValueLabel (g, trf ("Fade in {0} beats", juce::String (vib.fade, 2)), h->fade.translated (0.0f, 18.0f), p.text);
+        // 数值
+        if (draggedControl == VibratoControl::depthLine || draggedControl == VibratoControl::envelopePoint)
+        {
+            const auto* point = draggedControl == VibratoControl::envelopePoint && dragEnvelopePoint >= 0 && dragEnvelopePoint < (int) pts.size()
+                                    ? &pts[(size_t) dragEnvelopePoint] : nullptr;
+            const auto text = trill ? trf ("Trill {0}", formatSemitones (vib.depth))
+                                    : juce::String (std::abs (vib.depth) * (point != nullptr ? point->level : 1.0), 2) + " st";
+            const auto labelAt = point != nullptr ? envelopePointPosition (n, run, *point)
+                                                  : juce::Point<float> (x1, depthLineY (n, run, pts, run.end));
+            paintValueLabel (g, text, labelAt.translated (0.0f, -16.0f), p.text);
+        }
+
+        if (draggedControl == VibratoControl::speedPost)
+            paintValueLabel (g, formatRate (vib), speedBar (n, run, pts).getCentre().translated (0.0f, -18.0f), p.text);
     }
 
     void paintCurvePoints (juce::Graphics& g, const Note& n, bool focused) const
@@ -838,52 +1186,16 @@ struct PianoRoll::NoteArea final : public juce::Component
     {
         owner.grabKeyboardFocus();
 
-        if (owner.tool == Tool::curve)
-        {
-            curveMouseDown (e);
-            return;
-        }
-
         const auto& v = owner.view;
         downBeat = v.xToBeat (e.position.x);
         downPitch = v.yToPitch (e.position.y);
-        const auto hit = hitTest (e.position);
+        mode = Mode::none;
+        curveIndex = -1;
+        pressedNote = 0;
+        duplicating = false;
 
-        // Draw 工具：选中音符的节点、手柄可以直接拖动（加节点、颤音菜单仍在 Curve 工具里）
-        if (owner.tool == Tool::draw && ! e.mods.isShiftDown())
-        {
-            if (const auto curveHit = selectedCurveHit (e.position); curveHit.id != 0)
-            {
-                mode = Mode::none;
-                setFocusNote (curveHit.id);
-
-                if (e.mods.isPopupMenu())
-                {
-                    if (curveHit.point >= 0)
-                        deleteCurvePoint (curveHit.id, curveHit.point);
-                    return;
-                }
-
-                owner.beginDrag();
-                base = owner.dragOrigin;
-
-                if (const auto* n = editing::findNote (base, curveHit.id))
-                    beginHandleDrag (*n, curveHit);
-                return;
-            }
-        }
-
-        // 右键：删除（可拖过多个音符）
-        if (e.mods.isPopupMenu())
-        {
-            mode = Mode::erase;
-            owner.beginDrag();
-            eraseAt (e.position);
-            return;
-        }
-
-        // Slice 工具：在这个位置画一条竖线，松开时切开它经过的音符（单击 = 只切鼠标下的音符）
-        if (owner.tool == Tool::slice)
+        // 按住 S：在这个位置画一条竖线，松开鼠标时切开它经过的音符（单击 = 只切鼠标下的音符）
+        if (owner.slicing && ! e.mods.isPopupMenu())
         {
             mode = Mode::slice;
             sliceBeat = sliceBeatAt (e.position.x, e.mods.isAltDown());
@@ -892,15 +1204,90 @@ struct PianoRoll::NoteArea final : public juce::Component
             return;
         }
 
+        // 悬停或选中的音符上的节点、手柄：直接拖；右键节点删除它（右键其他手柄 = 右键音符）
+        if (! e.mods.isShiftDown())
+        {
+            const auto curveHit = editableCurveHit (e.position);
+            const auto deletable = curveHit.point >= 0 || curveHit.control == VibratoControl::envelopePoint;
+
+            if (curveHit.id != 0 && (deletable || ! e.mods.isPopupMenu()))
+            {
+                setFocusNote (curveHit.id);
+
+                if (e.mods.isPopupMenu())
+                {
+                    if (curveHit.point >= 0)
+                        deleteCurvePoint (curveHit.id, curveHit.point);
+                    else
+                        deleteEnvelopePoint (curveHit);
+                    return;
+                }
+
+                // 编辑颤音时选中这个音符，鼠标移开后控件仍然显示
+                if (curveHit.control != VibratoControl::none && curveHit.control != VibratoControl::addLine && owner.selection.count (curveHit.id) == 0)
+                    owner.setSelection ({ curveHit.id });
+
+                owner.beginDrag();
+                base = owner.dragOrigin;
+
+                if (auto* n = editing::findNote (base, curveHit.id))
+                {
+                    // 双击琥珀线：在这里加一个包络点，接着可以拖
+                    if (curveHit.control == VibratoControl::depthLine && e.getNumberOfClicks() >= 2)
+                    {
+                        if (const auto added = addEnvelopePoint (*n, curveHit, e.position.x); added.control == VibratoControl::envelopePoint)
+                        {
+                            owner.updateDrag (base);
+                            beginHandleDrag (*editing::findNote (base, curveHit.id), added);
+                            return;
+                        }
+                    }
+
+                    beginHandleDrag (*n, curveHit);
+                }
+                return;
+            }
+        }
+
+        const auto hit = hitTest (e.position);
+
+        // 右键：单击弹出菜单，拖动删除经过的音符（在 mouseDrag / mouseUp 里决定）
+        if (e.mods.isPopupMenu())
+        {
+            mode = Mode::rightPending;
+            pressedNote = hit.id;
+            return;
+        }
+
         if (hit.id != 0)
         {
+            if (e.getNumberOfClicks() < 2)
+                lastAddedNote = 0;
+
+            // 双击音符本体：加一个节点，按住可以接着拖（刚画出来的音符除外：那是在空白处双击）
+            if (e.getNumberOfClicks() >= 2 && hit.edge == 0 && ! e.mods.isShiftDown() && hit.id != lastAddedNote)
+            {
+                owner.setSelection ({ hit.id });
+                setFocusNote (hit.id);
+                owner.beginDrag();
+                base = owner.dragOrigin;
+
+                if (auto* n = editing::findNote (base, hit.id))
+                {
+                    const auto [t, st] = mouseToCurve (*n, e.position, e.mods.isAltDown());
+                    curveIndex = editing::insertCurvePoint (n->curve, t, st);
+                    mode = Mode::curvePoint;
+                    curveEditName = "Add bend point";
+                    owner.updateDrag (base);
+                }
+                return;
+            }
+
+            // Shift：单击加选 / 取消选中，拖动复制
             if (e.mods.isShiftDown())
             {
-                auto sel = owner.selection;
-                if (! sel.erase (hit.id))
-                    sel.insert (hit.id);
-                owner.setSelection (sel);
-                mode = Mode::none;
+                mode = Mode::shiftPending;
+                pressedNote = hit.id;
                 return;
             }
 
@@ -910,7 +1297,7 @@ struct PianoRoll::NoteArea final : public juce::Component
             owner.beginDrag();
             base = owner.dragOrigin;
             anchor = hit.id;
-            mode = hit.edge ? Mode::resize : Mode::move;
+            mode = hit.edge > 0 ? Mode::resize : (hit.edge < 0 ? Mode::trimStart : Mode::move);
 
             if (const auto* n = editing::findNote (base, anchor))
             {
@@ -919,6 +1306,8 @@ struct PianoRoll::NoteArea final : public juce::Component
             }
             return;
         }
+
+        lastAddedNote = 0;
 
         // 空白处：按住 Ctrl → 框选；否则添加音符
         if (e.mods.isCommandDown())
@@ -939,11 +1328,39 @@ struct PianoRoll::NoteArea final : public juce::Component
         const auto pitch = juce::jlimit (0, 127, downPitch);
         anchor = base.addNote (start, owner.defaultLength, pitch, defaultVelocity);
         anchorPitch = pitch;
+        lastAddedNote = anchor;
 
         owner.updateDrag (base);
         owner.setSelection ({ anchor });
         owner.preview (pitch, defaultVelocity);
         mode = Mode::resize;
+    }
+
+    /** Shift + 拖动音符：在原处留下一份副本，拖走的是原来的音符（选中的音符被按住时复制整个选区）。 */
+    void beginDuplicateDrag()
+    {
+        auto ids = owner.selection;
+
+        if (ids.count (pressedNote) == 0)
+            ids = { pressedNote };
+
+        owner.setSelection (ids);
+        owner.beginDrag();
+        base = owner.dragOrigin;
+
+        editing::duplicateInPlace (base, ids);
+
+        anchor = pressedNote;
+        duplicating = true;
+        mode = Mode::move;
+
+        if (const auto* n = editing::findNote (base, anchor))
+        {
+            anchorPitch = n->pitch;
+            owner.preview (n->pitch, n->velocity);
+        }
+
+        owner.updateDrag (base);
     }
 
     void mouseDrag (const juce::MouseEvent& e) override
@@ -954,8 +1371,43 @@ struct PianoRoll::NoteArea final : public juce::Component
         const bool noSnap = e.mods.isAltDown();
         owner.lastMouseBeat = beat;
 
+        // 右键、Shift 按下后移动了一段距离才算拖动：右键拖 = 删除，Shift 拖 = 复制
+        if ((mode == Mode::rightPending || mode == Mode::shiftPending) && e.getDistanceFromDragStart() > 4)
+        {
+            if (mode == Mode::rightPending)
+            {
+                mode = Mode::erase;
+                owner.beginDrag();
+                eraseAt (e.mouseDownPosition);
+            }
+            else if (pressedNote != 0)
+            {
+                beginDuplicateDrag();
+            }
+        }
+
         switch (mode)
         {
+            case Mode::rightPending:
+            case Mode::shiftPending:
+                break;
+
+            case Mode::trimStart:
+            {
+                const auto* a = editing::findNote (base, anchor);
+                if (a == nullptr)
+                    break;
+
+                const auto target = a->start + (beat - downBeat);
+                const auto snapped = noSnap ? target : editing::snapNearest (target, owner.grid);
+                const auto minLength = (noSnap || owner.grid <= 0.0) ? editing::minNoteLength : owner.grid;
+
+                auto working = base;
+                editing::trimNoteStarts (working, base, owner.selection, snapped - a->start, minLength);
+                owner.updateDrag (std::move (working));
+                break;
+            }
+
             case Mode::move:
             {
                 const auto* a = editing::findNote (base, anchor);
@@ -1018,6 +1470,7 @@ struct PianoRoll::NoteArea final : public juce::Component
                 {
                     const auto [t, st] = mouseToCurve (*n, e.position, noSnap);
                     editing::moveCurvePoint (n->curve, curveIndex, t, st, n->length);
+                    previewPoint (*n);
                     owner.updateDrag (std::move (working));
                 }
                 break;
@@ -1041,7 +1494,9 @@ struct PianoRoll::NoteArea final : public juce::Component
                 break;
             }
 
-            case Mode::vibratoShape:
+            case Mode::vibratoDepth:
+            case Mode::envelopePoint:
+            case Mode::vibratoSpeed:
             {
                 auto working = base;
                 auto* n = editing::findNote (working, focusNote);
@@ -1050,73 +1505,53 @@ struct PianoRoll::NoteArea final : public juce::Component
                     break;
 
                 auto vib = dragRun.settings;
-                const auto delta = e.position - e.mouseDownPosition;
+                const auto t = juce::jlimit (dragRun.start, dragRun.end, owner.view.xToBeat (e.position.x) - n->start);
+                const auto offset = (vibratoLineY (*n, t) - e.position.y) / owner.view.rowHeight; // 鼠标处想要的深度（半音）
 
-                // 先看往哪个方向拖：上下改深度，左右改速度（拖动中不再切换，避免互相干扰）
-                if (vibratoAxis == 0 && delta.getDistanceFromOrigin() > 4.0f)
-                    vibratoAxis = std::abs (delta.x) > std::abs (delta.y) ? 1 : 2;
-
-                if (vibratoAxis == 2)
+                if (mode == Mode::vibratoSpeed)
                 {
-                    const auto peakTime = dragRun.start + vibratoCyclesToPeak * vib.beatsPerCycle (secondsPerBeat());
-                    const auto baseY = pointY (*n, n->curve.evaluate (peakTime));
-                    const auto offset = (baseY - e.position.y) / owner.view.rowHeight;
+                    // 左右拖：往右更快，往左更慢（每 80 像素一倍）
+                    const auto factor = std::pow (2.0, (e.position.x - e.mouseDownPosition.x) / 80.0);
 
-                    if (vib.shape == Vibrato::Shape::trill)
-                    {
-                        // trill：相邻音的音程，吸附到半音；拖到本音下方就是下方的音。不能是 0
-                        auto interval = noSnap ? std::round (offset * 20.0) / 20.0 : (double) std::lround (offset);
-                        const auto minimum = noSnap ? 0.05 : 1.0;
-
-                        if (std::abs (interval) < minimum)
-                            interval = offset < 0.0 ? -minimum : minimum;
-
-                        vib.depth = juce::jlimit (-12.0, 12.0, interval);
-                    }
-                    else
-                    {
-                        auto depth = std::abs (offset);
-
-                        if (! noSnap)
-                            depth = std::round (depth * 20.0) / 20.0; // 0.05 半音一档
-
-                        vib.depth = juce::jlimit (0.05, 12.0, depth);
-                    }
-                }
-                else if (vibratoAxis == 1)
-                {
-                    const auto t = owner.view.xToBeat (e.position.x) - n->start - dragRun.start;
-                    const auto bpc = std::max (1.0 / 64.0, t / std::max (0.25, vibratoCyclesToPeak));
+                    const auto rate = dragRun.settings.rate * factor;
 
                     if (vib.sync)
-                        vib.rate = editing::snapSyncRate (vib, 1.0 / bpc);
+                        vib.rate = editing::snapSyncRate (vib, rate);
                     else
-                        vib.rate = noSnap ? 1.0 / (bpc * secondsPerBeat())
-                                          : std::round (10.0 / (bpc * secondsPerBeat())) / 10.0;
+                        vib.rate = noSnap ? rate : std::round (rate * 10.0) / 10.0;
+                }
+                else if (vib.shape == Vibrato::Shape::trill)
+                {
+                    // trill：线的高度是相邻音的音程，吸附到半音；拖到零线下方换成另一边的音。不能是 0
+                    const auto sign = (dragRun.settings.depth < 0.0 ? -1.0 : 1.0) * (offset < 0.0 ? -1.0 : 1.0);
+                    auto interval = noSnap ? std::round (std::abs (offset) * 20.0) / 20.0 : (double) std::lround (std::abs (offset));
+                    interval = std::max (interval, noSnap ? 0.05 : 1.0);
+                    vib.depth = juce::jlimit (-12.0, 12.0, sign * interval);
+                }
+                else if (mode == Mode::envelopePoint)
+                {
+                    auto depth = std::max (0.0, offset);
+
+                    if (! noSnap)
+                        depth = std::round (depth * 20.0) / 20.0;
+
+                    editing::moveEnvelopePoint (vib, dragRun.length(), dragEnvelopePoint,
+                                                (t - dragRun.start) / std::max (1.0e-9, dragRun.length()), depth);
+                }
+                else
+                {
+                    // 拖琥珀线（包括往上拉加颤音）：整段的深度跟着鼠标上下移动（一行 = 一个半音），包络的形状不变
+                    auto depth = dragRun.settings.depth + (e.mouseDownPosition.y - e.position.y) / owner.view.rowHeight;
+
+                    if (! noSnap)
+                        depth = std::round (depth * 20.0) / 20.0;
+
+                    vib.depth = juce::jlimit (0.0, 12.0, depth);
                 }
 
                 vib.normalise();
                 editing::setRunVibrato (n->curve, dragRun, vib);
                 owner.updateDrag (std::move (working));
-                break;
-            }
-
-            case Mode::vibratoFade:
-            {
-                auto working = base;
-
-                if (auto* n = editing::findNote (working, focusNote))
-                {
-                    auto t = owner.view.xToBeat (e.position.x) - n->start - dragRun.start;
-
-                    if (! noSnap)
-                        t = editing::snapNearest (t, owner.grid);
-
-                    auto vib = dragRun.settings;
-                    vib.fade = juce::jlimit (0.0, dragRun.length(), t);
-                    editing::setRunVibrato (n->curve, dragRun, vib);
-                    owner.updateDrag (std::move (working));
-                }
                 break;
             }
 
@@ -1168,18 +1603,12 @@ struct PianoRoll::NoteArea final : public juce::Component
         if (ids.empty())
             return;
 
-        editing::IdSet added;
-        owner.edit ("Slice notes", [&] (Project& p) { added = editing::sliceNotes (p, ids, beat); });
-
-        // 选中切开后的两半，方便接着处理
-        auto sel = ids;
-        sel.insert (added.begin(), added.end());
-        owner.setSelection (editing::existingOnly (owner.project, sel));
+        owner.sliceAndSelect (ids, beat);
     }
 
     void paintSliceLine (juce::Graphics& g) const
     {
-        if (owner.tool != Tool::slice || (mode != Mode::slice && hoverSliceBeat < 0.0))
+        if (! owner.slicing || (mode != Mode::slice && hoverSliceBeat < 0.0))
             return;
 
         const auto& p = owner.palette;
@@ -1211,10 +1640,16 @@ struct PianoRoll::NoteArea final : public juce::Component
             hoverSliceBeat = -1.0;
             repaint();
         }
+
+        if (mode == Mode::none)
+        {
+            clearHover();
+            setFocusNote (0);
+        }
     }
 
     //==============================================================================
-    /** Curve 工具里右键音符的菜单。atBeat 是右键的位置（拍），用来确定"这一段"。 */
+    /** 右键音符的菜单。atBeat 是右键的位置（拍），用来确定"这一段"和切开的位置。 */
     void showNoteMenu (NoteId id, double atBeat)
     {
         const auto* note = editing::findNote (owner.project, id);
@@ -1246,7 +1681,15 @@ struct PianoRoll::NoteArea final : public juce::Component
         const auto presets = owner.presetLibrary.load();
 
         enum { vibSegmentId = 1, vibWholeId, trillSegmentId, trillWholeId, syncId, removeId, clearId, glideId,
-               savePresetId, noPresetsId, shapeBase = 100, presetBase = 1000, deleteBase = 5000 };
+               savePresetId, noPresetsId, sliceId, deleteId, shapeBase = 100, presetBase = 1000, deleteBase = 5000 };
+
+        // 切开的位置：吸附到网格，离音符两端太近时不能切
+        const auto sliceAt = editing::snapNearest (atBeat, owner.grid);
+        const auto canSlice = std::any_of (targets.begin(), targets.end(), [&] (NoteId t)
+        {
+            const auto* n = editing::findNote (owner.project, t);
+            return n != nullptr && editing::canSlice (*n, sliceAt);
+        });
 
         juce::PopupMenu menu;
 
@@ -1309,11 +1752,14 @@ struct PianoRoll::NoteArea final : public juce::Component
         menu.addSeparator();
         menu.addSubMenu (tr ("Presets"), presetMenu);
         menu.addItem (clearId, tr ("Clear curve"), ! curve.isFlat());
+        menu.addSeparator();
+        menu.addItem (sliceId, tr ("Slice here (hold S to slice several)"), canSlice);
+        menu.addItem (deleteId, targets.size() > 1 ? tr ("Delete selected notes") : tr ("Delete note"));
 
         juce::Component::SafePointer<NoteArea> safeThis (this);
 
         menu.showMenuAsync (juce::PopupMenu::Options().withMousePosition(),
-                            [safeThis, id, segment, segmentShape, inRun, clickedRun, syncChecked, targets, presets] (int result)
+                            [safeThis, id, segment, segmentShape, inRun, clickedRun, syncChecked, targets, presets, sliceAt] (int result)
         {
             auto* self = safeThis.getComponent();
 
@@ -1363,6 +1809,14 @@ struct PianoRoll::NoteArea final : public juce::Component
             {
                 case glideId:
                     o.glideSelection();
+                    break;
+
+                case sliceId:
+                    o.sliceAndSelect (targets, sliceAt);
+                    break;
+
+                case deleteId:
+                    o.edit ("Delete notes", [&] (Project& p) { editing::deleteNotes (p, targets); });
                     break;
 
                 case vibSegmentId:
@@ -1434,102 +1888,41 @@ struct PianoRoll::NoteArea final : public juce::Component
         });
     }
 
-    //==============================================================================
-    // 曲线工具
-    void curveMouseDown (const juce::MouseEvent& e)
+    /** 开始拖动节点、弯曲手柄或颤音控件（调用前已 beginDrag）。n 是 base 里的音符。 */
+    void beginHandleDrag (Note& n, CurveHit hit)
     {
-        const auto hit = curveHitTest (e.position);
-        mode = Mode::none;
-        curveIndex = -1;
-
-        if (hit.id == 0)
+        // 往上拉加颤音：先加一段深度为 0 的颤音，接着就是拖它的琥珀线
+        if (hit.control == VibratoControl::addLine)
         {
-            setFocusNote (0);
+            editing::addVibrato (n.curve, hit.segment, 0.0);
+            owner.updateDrag (base);
 
-            // Ctrl + 拖动：框选（例如选出要连成滑音的一串音符）
-            if (e.mods.isCommandDown())
-            {
-                mode = Mode::marquee;
-                marqueeBase = e.mods.isShiftDown() ? owner.selection : editing::IdSet {};
-                marquee = {};
+            const auto runs = n.curve.getVibratoRuns (n.length);
+            const auto found = std::find_if (runs.begin(), runs.end(), [&] (const PitchCurve::Run& r) { return r.firstPoint == hit.segment; });
 
-                if (! e.mods.isShiftDown())
-                    owner.setSelection ({});
-                return;
-            }
-
-            owner.setSelection ({});
-            return;
-        }
-
-        setFocusNote (hit.id);
-
-        // Shift + 单击音符：加选 / 取消选中（不加节点）
-        if (e.mods.isShiftDown() && ! e.mods.isPopupMenu() && hit.point < 0 && hit.segment < 0 && hit.vibratoHandle == 0)
-        {
-            auto sel = owner.selection;
-            if (! sel.erase (hit.id))
-                sel.insert (hit.id);
-            owner.setSelection (sel);
-            return;
-        }
-
-        // 右键：节点上删除节点；音符上弹出菜单（颤音、常用手法）。右键选区里的音符时，菜单作用于整个选区
-        if (e.mods.isPopupMenu())
-        {
-            if (hit.point >= 0)
-            {
-                owner.setSelection ({ hit.id });
-                deleteCurvePoint (hit.id, hit.point);
-                return;
-            }
-
-            if (owner.selection.count (hit.id) == 0)
-                owner.setSelection ({ hit.id });
-
-            showNoteMenu (hit.id, owner.view.xToBeat (e.position.x));
-            return;
-        }
-
-        owner.setSelection ({ hit.id });
-
-        owner.beginDrag();
-        base = owner.dragOrigin;
-        auto* n = editing::findNote (base, hit.id);
-
-        if (n == nullptr)
-            return;
-
-        if (hit.vibratoHandle != 0 || hit.segment >= 0 || hit.point >= 0)
-        {
-            beginHandleDrag (*n, hit);
-            return;
-        }
-
-        // 点在音符本体上：在这里加一个节点，接着可以拖动它
-        const auto [t, st] = mouseToCurve (*n, e.position, e.mods.isAltDown());
-        curveIndex = editing::insertCurvePoint (n->curve, t, st);
-        mode = Mode::curvePoint;
-        curveEditName = "Add bend point";
-        owner.updateDrag (base);
-    }
-
-    /** 开始拖动节点、弯曲手柄或颤音手柄（调用前已 beginDrag）。n 是 base 里的音符。 */
-    void beginHandleDrag (const Note& n, const CurveHit& hit)
-    {
-        if (hit.vibratoHandle != 0)
-        {
-            const auto handles = vibratoHandles (n);
-
-            if (hit.vibratoRun < 0 || hit.vibratoRun >= (int) handles.size())
+            if (found == runs.end())
                 return;
 
-            const auto& h = handles[(size_t) hit.vibratoRun];
-            mode = hit.vibratoHandle == 1 ? Mode::vibratoShape : Mode::vibratoFade;
-            dragRun = h.run;
-            vibratoCyclesToPeak = h.peak / std::max (1.0e-6, h.run.settings.beatsPerCycle (secondsPerBeat()));
-            vibratoAxis = 0;
-            curveEditName = h.run.settings.shape == Vibrato::Shape::trill ? "Change trill" : "Change vibrato";
+            hit.control = VibratoControl::depthLine;
+            hit.vibratoRun = (int) (found - runs.begin());
+            beginHandleDrag (n, hit);
+            curveEditName = "Add vibrato";
+            return;
+        }
+
+        if (hit.control != VibratoControl::none)
+        {
+            const auto runs = n.curve.getVibratoRuns (n.length);
+
+            if (hit.vibratoRun < 0 || hit.vibratoRun >= (int) runs.size())
+                return;
+
+            dragRun = runs[(size_t) hit.vibratoRun];
+            dragRunIndex = hit.vibratoRun;
+            dragEnvelopePoint = hit.envelopePoint;
+            mode = hit.control == VibratoControl::depthLine ? Mode::vibratoDepth
+                 : hit.control == VibratoControl::envelopePoint ? Mode::envelopePoint : Mode::vibratoSpeed;
+            curveEditName = dragRun.settings.shape == Vibrato::Shape::trill ? "Change trill" : "Change vibrato";
             return;
         }
 
@@ -1547,7 +1940,73 @@ struct PianoRoll::NoteArea final : public juce::Component
             mode = Mode::curvePoint;
             curveIndex = hit.point;
             curveEditName = "Move bend point";
+            previewPoint (n);
         }
+    }
+
+    /** 试听正在拖的节点的音高（最接近的半音；插件内播放时不试听）。 */
+    void previewPoint (const Note& n)
+    {
+        if (curveIndex < 0 || curveIndex >= (int) n.curve.points.size() || owner.processor.isPlayingInternally())
+            return;
+
+        const auto pitch = juce::jlimit (0, 127, n.pitch + (int) std::lround (n.curve.points[(size_t) curveIndex].semitones));
+
+        if (pitch != previewedPitch)
+        {
+            previewedPitch = pitch;
+            owner.preview (pitch, n.velocity);
+        }
+    }
+
+    /** 在琥珀线上 x 处加一个包络点（改的是 n，也就是 base 里的音符）。返回指向新点的命中；加不了时 control 为 none。 */
+    CurveHit addEnvelopePoint (Note& n, const CurveHit& lineHit, float x)
+    {
+        const auto runs = n.curve.getVibratoRuns (n.length);
+
+        if (lineHit.vibratoRun < 0 || lineHit.vibratoRun >= (int) runs.size())
+            return {};
+
+        const auto& run = runs[(size_t) lineHit.vibratoRun];
+
+        if (run.settings.shape != Vibrato::Shape::sine)
+            return {};
+
+        auto vib = run.settings;
+        const auto u = (owner.view.xToBeat (x) - n.start - run.start) / std::max (1.0e-9, run.length());
+        const auto index = editing::insertEnvelopePoint (vib, run.length(), u);
+
+        if (index < 0)
+            return {};
+
+        editing::setRunVibrato (n.curve, run, vib);
+
+        auto hit = lineHit;
+        hit.control = VibratoControl::envelopePoint;
+        hit.envelopePoint = index;
+        return hit;
+    }
+
+    void deleteEnvelopePoint (const CurveHit& hit)
+    {
+        owner.edit ("Change vibrato", [&] (Project& p)
+        {
+            auto* n = editing::findNote (p, hit.id);
+
+            if (n == nullptr)
+                return;
+
+            const auto runs = n->curve.getVibratoRuns (n->length);
+
+            if (hit.vibratoRun < 0 || hit.vibratoRun >= (int) runs.size())
+                return;
+
+            const auto& run = runs[(size_t) hit.vibratoRun];
+            auto vib = run.settings;
+
+            if (editing::removeEnvelopePoint (vib, run.length(), hit.envelopePoint))
+                editing::setRunVibrato (n->curve, run, vib);
+        });
     }
 
     void deleteCurvePoint (NoteId id, int index)
@@ -1563,27 +2022,12 @@ struct PianoRoll::NoteArea final : public juce::Component
     static juce::MouseCursor cursorFor (const CurveHit& hit)
     {
         if (hit.point >= 0)            return juce::MouseCursor::DraggingHandCursor;
-        if (hit.vibratoHandle == 1)    return juce::MouseCursor::UpDownLeftRightResizeCursor;
-        if (hit.vibratoHandle == 2)    return juce::MouseCursor::LeftRightResizeCursor;
+        if (hit.control == VibratoControl::depthLine)    return juce::MouseCursor::UpDownResizeCursor;
+        if (hit.control == VibratoControl::envelopePoint)    return juce::MouseCursor::DraggingHandCursor;
+        if (hit.control == VibratoControl::addLine)    return juce::MouseCursor::UpDownResizeCursor;
+        if (hit.control == VibratoControl::speedPost)    return juce::MouseCursor::LeftRightResizeCursor;
         if (hit.segment >= 0)          return juce::MouseCursor::UpDownResizeCursor;
         return juce::MouseCursor::NormalCursor;
-    }
-
-    void mouseDoubleClick (const juce::MouseEvent& e) override
-    {
-        // 曲线工具：双击音符，去掉整条曲线
-        if (owner.tool != Tool::curve || e.mods.isPopupMenu())
-            return;
-
-        if (const auto hit = hitTest (e.position); hit.id != 0)
-        {
-            const auto id = hit.id;
-            owner.edit ("Remove curve", [&] (Project& p)
-            {
-                if (auto* n = editing::findNote (p, id))
-                    n->curve = {};
-            });
-        }
     }
 
     void setFocusNote (NoteId id)
@@ -1595,7 +2039,7 @@ struct PianoRoll::NoteArea final : public juce::Component
         }
     }
 
-    void mouseUp (const juce::MouseEvent&) override
+    void mouseUp (const juce::MouseEvent& e) override
     {
         switch (mode)
         {
@@ -1604,8 +2048,29 @@ struct PianoRoll::NoteArea final : public juce::Component
                 repaint();
                 break;
 
+            case Mode::rightPending:
+                // 右键单击：音符上弹出菜单（右键选区里的音符时，菜单作用于整个选区）
+                if (pressedNote != 0)
+                {
+                    if (owner.selection.count (pressedNote) == 0)
+                        owner.setSelection ({ pressedNote });
+
+                    showNoteMenu (pressedNote, downBeat);
+                }
+                break;
+
+            case Mode::shiftPending:
+                if (pressedNote != 0)
+                {
+                    auto sel = owner.selection;
+                    if (! sel.erase (pressedNote))
+                        sel.insert (pressedNote);
+                    owner.setSelection (sel);
+                }
+                break;
+
             case Mode::move:
-                owner.endDrag ("Move notes");
+                owner.endDrag (duplicating ? "Duplicate notes" : "Move notes");
                 break;
 
             case Mode::resize:
@@ -1614,14 +2079,33 @@ struct PianoRoll::NoteArea final : public juce::Component
                 owner.endDrag (owner.dragOrigin.notes.size() < owner.project.notes.size() ? "Add note" : "Resize notes");
                 break;
 
+            case Mode::trimStart:
+                owner.endDrag ("Resize notes");
+                break;
+
             case Mode::erase:
                 owner.endDrag ("Delete notes");
                 break;
 
+            case Mode::vibratoDepth:
+            {
+                // 深度拖到 0 后松开 = 去掉这一段颤音，重新显示"往上拉"的线
+                auto working = owner.project;
+
+                if (auto* n = editing::findNote (working, focusNote))
+                {
+                    editing::removeSilentVibrato (n->curve);
+                    owner.updateDrag (std::move (working));
+                }
+
+                owner.endDrag (curveEditName);
+                break;
+            }
+
             case Mode::curvePoint:
             case Mode::curveTension:
-            case Mode::vibratoShape:
-            case Mode::vibratoFade:
+            case Mode::envelopePoint:
+            case Mode::vibratoSpeed:
                 owner.endDrag (curveEditName);
                 break;
 
@@ -1631,22 +2115,34 @@ struct PianoRoll::NoteArea final : public juce::Component
                 break;
 
             case Mode::none:
+                // 只按了一下节点或手柄，没有拖动
+                if (owner.dragging)
+                    owner.endDrag (curveEditName);
                 break;
         }
 
         owner.stopPreview();
+        previewedPitch = -1;
         mode = Mode::none;
+        duplicating = false;
+        updateHover (e.position, e.mods);
     }
 
     void mouseMove (const juce::MouseEvent& e) override
     {
         owner.lastMouseBeat = owner.view.xToBeat (e.position.x);
+        updateHover (e.position, e.mods);
+    }
 
-        if (owner.tool == Tool::slice)
+    /** 悬停：决定显示手柄的音符、琥珀线和光标。按下 / 松开 S 时也会调用。 */
+    void updateHover (juce::Point<float> pos, juce::ModifierKeys mods)
+    {
+        if (owner.slicing)
         {
-            const auto beat = sliceBeatAt (e.position.x, e.mods.isAltDown());
+            clearHover();
+            setFocusNote (0);
 
-            if (beat != hoverSliceBeat)
+            if (const auto beat = sliceBeatAt (pos.x, mods.isAltDown()); beat != hoverSliceBeat)
             {
                 hoverSliceBeat = beat;
                 repaint();
@@ -1662,48 +2158,51 @@ struct PianoRoll::NoteArea final : public juce::Component
             repaint();
         }
 
-        if (owner.tool == Tool::curve)
+        const auto curveHit = editableCurveHit (pos);
+        const auto hit = hitTest (pos);
+        const auto* current = editing::findNote (owner.project, focusNote);
+
+        // 显示手柄的音符：节点或手柄下的音符 > 鼠标下的音符 > 鼠标正在移向琥珀线的音符 > 唯一选中的音符
+        NoteId focus = 0;
+
+        if (curveHit.id != 0)
+            focus = curveHit.id;
+        else if (hit.id != 0)
+            focus = hit.id;
+        else if (current != nullptr && nearVibratoLine (*current, pos))
+            focus = current->id;
+
+        setFocusNote (focus);
+
+        // 琥珀线跟着鼠标所在的段走（在琥珀线上时保持不变）
+        std::optional<VibratoLine> line;
+
+        if (const auto* n = editing::findNote (owner.project, handleNote()))
+            line = vibratoLineAt (*n, owner.view.xToBeat (pos.x) - n->start);
+
+        if (line != hoverLine || curveHit != hoverControl)
         {
-            const auto hit = curveHitTest (e.position);
-
-            // 悬停的音符成为"正在编辑"的音符（显示手柄）；移开后保留选中的那个
-            if (hit.id != 0)
-                setFocusNote (hit.id);
-            else if (owner.selection.size() == 1)
-                setFocusNote (*owner.selection.begin());
-            else
-                setFocusNote (0);
-
-            if (hit.point >= 0 || hit.vibratoHandle != 0 || hit.segment >= 0)
-                setMouseCursor (cursorFor (hit));
-            else
-                setMouseCursor (hit.id != 0 ? juce::MouseCursor::CrosshairCursor : juce::MouseCursor::NormalCursor);
-            return;
+            hoverLine = line;
+            hoverControl = curveHit;
+            repaint();
         }
 
-        const auto hit = hitTest (e.position);
-
-        // Draw 工具：悬停的选中音符显示弯曲手柄
-        if (owner.tool == Tool::draw)
-        {
-            const auto curveHit = selectedCurveHit (e.position);
-
-            if (curveHit.id != 0)
-                setFocusNote (curveHit.id);
-            else if (hit.id != 0 && owner.selection.count (hit.id) != 0)
-                setFocusNote (hit.id);
-
-            if (curveHit.id != 0)
-            {
-                setMouseCursor (cursorFor (curveHit));
-                return;
-            }
-        }
-
-        if (hit.id != 0)
-            setMouseCursor (hit.edge ? juce::MouseCursor::LeftRightResizeCursor : juce::MouseCursor::DraggingHandCursor);
+        if (curveHit.id != 0)
+            setMouseCursor (cursorFor (curveHit));
+        else if (hit.id != 0)
+            setMouseCursor (hit.edge != 0 ? juce::MouseCursor::LeftRightResizeCursor : juce::MouseCursor::DraggingHandCursor);
         else
-            setMouseCursor (owner.tool == Tool::draw ? juce::MouseCursor::CrosshairCursor : juce::MouseCursor::NormalCursor);
+            setMouseCursor (juce::MouseCursor::CrosshairCursor);
+    }
+
+    void clearHover()
+    {
+        if (hoverLine || hoverControl != CurveHit {})
+        {
+            hoverLine.reset();
+            hoverControl = {};
+            repaint();
+        }
     }
 
     void mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& wheel) override
@@ -1748,20 +2247,28 @@ struct PianoRoll::NoteArea final : public juce::Component
     editing::IdSet marqueeBase;
     juce::Rectangle<float> marquee;
 
-    // 曲线工具
+    NoteId pressedNote = 0;     ///< 右键或 Shift 按下的音符（还不知道是单击还是拖动）
+    int previewedPitch = -1;    ///< 拖节点时正在试听的音高
+    NoteId lastAddedNote = 0;   ///< 最近一次在空白处画出的音符（在空白处双击时不加节点）
+    bool duplicating = false;   ///< Shift + 拖动：拖走原来的音符，原处留下副本
+
+    // 节点和手柄
     NoteId focusNote = 0;       ///< 显示手柄的音符（悬停或正在编辑）
     int curveIndex = -1;        ///< 正在拖动的节点 / 段
     float tensionStart = 0.0f;
     juce::String curveEditName;
 
-    // Slice 工具
+    // 悬停：加颤音的琥珀线、鼠标下的节点或颤音控件（高亮）
+    std::optional<VibratoLine> hoverLine;
+    CurveHit hoverControl;
+
+    // 切开（按住 S）
     double sliceBeat = 0.0, hoverSliceBeat = -1.0;
     float sliceY0 = 0.0f, sliceY1 = 0.0f;
 
     // 拖动颤音手柄
-    PitchCurve::Run dragRun;  ///< 正在拖动手柄的那一段颤音（拖动开始时的样子）
-    double vibratoCyclesToPeak = 0.25;
-    int vibratoAxis = 0; ///< 0 = 还没确定，1 = 左右（速度），2 = 上下（深度）
+    PitchCurve::Run dragRun;  ///< 正在拖动控件的那一段颤音（拖动开始时的样子）
+    int dragRunIndex = -1, dragEnvelopePoint = -1;
 };
 
 //==============================================================================
@@ -1878,19 +2385,21 @@ struct PianoRoll::ShortcutsPanel final : public juce::Component
         // 源文件为 UTF-8；箭头等字符用 fromUTF8 转换
         static const std::vector<Section> sections {
             { TRK ("Notes"), {
-                { TRK ("Click empty space"), TRK ("Add a note (Draw tool)") },
+                { TRK ("Click empty space"), TRK ("Add a note") },
                 { TRK ("Drag after clicking"), TRK ("Set the new note's length") },
                 { TRK ("Drag a note"), TRK ("Move it (time and pitch)") },
                 { TRK ("Drag a note's right end"), TRK ("Change its length") },
+                { TRK ("Drag a note's left end"), TRK ("Change where it starts") },
+                { TRK ("Shift + drag a note"), TRK ("Duplicate it") },
                 { TRK ("Alt + drag"), TRK ("Move or resize without snapping") },
-                { TRK ("Right-click / right-drag"), TRK ("Delete notes") },
-                { TRK ("Drag a selected note's points"), TRK ("Adjust its bend (no need for Curve)") },
+                { TRK ("Right-drag"), TRK ("Delete notes") },
+                { TRK ("Hold S, click or drag"), TRK ("Cut a note / cut every note the line crosses") },
                 { TRK ("Drag in the VEL lane"), TRK ("Change velocity") },
                 { TRK ("Alt + wheel on a note"), TRK ("Change velocity") },
                 { TRK ("Click a key"), TRK ("Preview the pitch") },
             } },
             { TRK ("Selection"), {
-                { TRK ("Ctrl + drag"), TRK ("Box select (any tool)") },
+                { TRK ("Ctrl + drag"), TRK ("Box select") },
                 { TRK ("Shift + click"), TRK ("Add to / remove from selection") },
                 { TRK ("Ctrl + A"), TRK ("Select all") },
                 { TRK ("Esc"), TRK ("Clear selection") },
@@ -1903,25 +2412,29 @@ struct PianoRoll::ShortcutsPanel final : public juce::Component
                 { "\xe2\x86\x90 \xe2\x86\x92", TRK ("Move by the snap step (Shift: bar)") },
                 { TRK ("Ctrl + Z / Ctrl + Y"), TRK ("Undo / redo") },
             } },
-            { TRK ("Pitch curves (Curve tool)"), {
-                { TRK ("Click a note"), TRK ("Add a bend point (keep dragging)") },
+            { TRK ("Pitch curves"), {
+                { TRK ("Double-click a note"), TRK ("Add a bend point (keep dragging)") },
                 { TRK ("Drag a point"), TRK ("Move it (snaps to semitones, grid)") },
                 { TRK ("Drag a small circle"), TRK ("Change the curve shape") },
                 { TRK ("Right-click a point"), TRK ("Delete it") },
-                { TRK ("Double-click a note"), TRK ("Remove its whole curve") },
-                { TRK ("Right-click a note"), TRK ("Vibrato, trill, bends, presets") },
+                { TRK ("Drag the line above a note"), TRK ("Add vibrato (drag up for more depth)") },
+                { TRK ("Drag the amber line"), TRK ("Vibrato depth (trill: the other note)") },
+                { TRK ("Double-click the amber line"), TRK ("Add a depth point (right-click deletes it)") },
+                { TRK ("Drag the blue handle"), TRK ("Vibrato speed (left slower, right faster)") },
+                { TRK ("Right-click a note"), TRK ("Vibrato, trill, bends, presets, slice") },
                 { TRK ("G  (2+ notes selected)"), TRK ("Glide: merge a line or chords into legato notes") },
-                { TRK ("Shift+click / Ctrl+drag"), TRK ("Select several notes") },
-                { TRK ("Drag the diamond"), TRK ("Depth or trill note (up/down), speed (left/right)") },
-                { TRK ("Drag the bar below"), TRK ("Vibrato fade-in length") },
             } },
-            { TRK ("View & tools"), {
+            { TRK ("Playback"), {
+                { TRK ("Space  or  the play button"), TRK ("Play inside Curvable (works while FL is stopped)") },
+                { TRK ("Click the ruler"), TRK ("Set where playback starts") },
+                { TRK ("Drag in the ruler"), TRK ("Set the loop (drag its ends to change it)") },
+                { TRK ("Double-click the ruler"), TRK ("Remove the loop") },
+            } },
+            { TRK ("View and files"), {
                 { TRK ("Wheel"), TRK ("Scroll up / down") },
                 { TRK ("Shift + wheel"), TRK ("Scroll left / right") },
                 { TRK ("Ctrl + wheel"), TRK ("Zoom horizontally") },
                 { TRK ("Ctrl + Shift + wheel"), TRK ("Zoom vertically") },
-                { TRK ("P  /  C  /  S"), TRK ("Draw / Curve / Slice tool") },
-                { TRK ("Slice: click / drag"), TRK ("Cut a note / cut every note the line crosses") },
                 { TRK ("Drop a MIDI file"), TRK ("Add its notes (pitch bends become curves)") },
                 { TRK ("Drag the MIDI button"), TRK ("Export to FL or another DAW") },
                 { TRK ("F1  or  ?"), TRK ("Show this list") },
@@ -1985,8 +2498,8 @@ struct PianoRoll::ShortcutsPanel final : public juce::Component
             }
         };
 
-        drawColumn (32.0f, { 0, 1 });
-        drawColumn (32.0f + colW + 24.0f, { 2, 3, 4 });
+        drawColumn (32.0f, { 0, 1, 2 });
+        drawColumn (32.0f + colW + 24.0f, { 3, 4, 5 });
 
         g.restoreState();
     }
@@ -2179,6 +2692,82 @@ struct PianoRoll::MidiButton final : public juce::TextButton
     bool dragged = false;
 };
 
+//==============================================================================
+// 播放、循环、跟随：底部工具栏左边的三个圆形图标按钮
+struct PianoRoll::TransportButton final : public juce::Button
+{
+    enum class Kind { play, loop, follow };
+
+    TransportButton (const Palette& p, Kind k) : juce::Button ("Transport"), palette (p), kind (k)
+    {
+        setWantsKeyboardFocus (false);
+    }
+
+    void paintButton (juce::Graphics& g, bool isHighlighted, bool isDown) override
+    {
+        const auto r = getLocalBounds().toFloat().reduced (4.0f);
+        const auto on = getToggleState();
+
+        if (isDown || (on && kind != Kind::play))
+            neu::inset (g, r, r.getHeight() / 2.0f, palette, 3);
+        else
+            neu::raised (g, r, r.getHeight() / 2.0f, palette, 3);
+
+        const auto c = r.getCentre();
+        auto colour = on ? (kind == Kind::loop ? palette.warm : palette.accent) : (isHighlighted ? palette.text : palette.muted);
+        g.setColour (colour);
+
+        switch (kind)
+        {
+            case Kind::play:
+            {
+                if (on)
+                {
+                    g.fillRoundedRectangle (juce::Rectangle<float> (10.0f, 10.0f).withCentre (c), 2.0f); // 停止
+                }
+                else
+                {
+                    juce::Path triangle;
+                    triangle.addTriangle (c.x - 4.0f, c.y - 6.0f, c.x - 4.0f, c.y + 6.0f, c.x + 6.5f, c.y);
+                    g.fillPath (triangle);
+                }
+                break;
+            }
+
+            case Kind::loop:
+            {
+                // 两个首尾相接的箭头围成一圈
+                juce::Path loop;
+                const auto box = juce::Rectangle<float> (16.0f, 10.0f).withCentre (c);
+                loop.addRoundedRectangle (box, 5.0f);
+                g.strokePath (loop, juce::PathStrokeType (1.7f));
+                juce::Path head;
+                head.addTriangle (box.getCentreX() + 1.0f, box.getY() - 3.2f, box.getCentreX() + 1.0f, box.getY() + 3.2f,
+                                  box.getCentreX() + 5.0f, box.getY());
+                g.fillPath (head);
+                break;
+            }
+
+            case Kind::follow:
+            {
+                // 播放头竖线 + 向右的箭头
+                g.fillRect (c.x - 6.0f, c.y - 7.0f, 1.8f, 14.0f);
+                juce::Path arrow;
+                arrow.startNewSubPath (c.x - 2.0f, c.y);
+                arrow.lineTo (c.x + 6.0f, c.y);
+                g.strokePath (arrow, juce::PathStrokeType (1.8f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+                juce::Path head;
+                head.addTriangle (c.x + 3.0f, c.y - 3.5f, c.x + 3.0f, c.y + 3.5f, c.x + 7.5f, c.y);
+                g.fillPath (head);
+                break;
+            }
+        }
+    }
+
+    const Palette& palette;
+    Kind kind;
+};
+
 void PianoRoll::savePreset (const PitchCurve& curve, double noteLength)
 {
     showShortcuts (false);
@@ -2195,6 +2784,9 @@ PianoRoll::PianoRoll (CurvableProcessor& p, const Palette& pal)
       shortcutsPanel (std::make_unique<ShortcutsPanel> (*this)),
       namePrompt (std::make_unique<NamePrompt> (*this)),
       midiButton (std::make_unique<MidiButton> (*this)),
+      playButton (std::make_unique<TransportButton> (pal, TransportButton::Kind::play)),
+      loopButton (std::make_unique<TransportButton> (pal, TransportButton::Kind::loop)),
+      followButton (std::make_unique<TransportButton> (pal, TransportButton::Kind::follow)),
       presetLibrary (p.getHostingContext().getSettings().getFile().getSiblingFile (CurvePresetLibrary::fileName))
 {
     setWantsKeyboardFocus (true);
@@ -2218,20 +2810,6 @@ PianoRoll::PianoRoll (CurvableProcessor& p, const Palette& pal)
     addChildComponent (shortcutsPanel.get());
     addChildComponent (namePrompt.get());
 
-    for (auto* b : { &drawButton, &curveButton, &sliceButton })
-    {
-        CurvableLookAndFeel::setStyle (*b, "segment");
-        b->setClickingTogglesState (true);
-        b->setRadioGroupId (2001);
-        b->setWantsKeyboardFocus (false);
-        addAndMakeVisible (b);
-    }
-
-    curveButton.onClick  = [this] { if (curveButton.getToggleState()) setTool (Tool::curve); };
-    sliceButton.onClick  = [this] { if (sliceButton.getToggleState()) setTool (Tool::slice); };
-    drawButton.onClick   = [this] { if (drawButton.getToggleState()) setTool (Tool::draw); };
-    drawButton.setToggleState (true, juce::dontSendNotification);
-
     CurvableLookAndFeel::setStyle (snapButton, "pill");
     snapButton.setWantsKeyboardFocus (false);
     snapButton.onClick = [this] { showSnapMenu(); };
@@ -2244,6 +2822,20 @@ PianoRoll::PianoRoll (CurvableProcessor& p, const Palette& pal)
 
     CurvableLookAndFeel::setStyle (*midiButton, "pill");
     addAndMakeVisible (*midiButton);
+
+    playButton->onClick = [this] { togglePlayback(); };
+    loopButton->onClick = [this] { toggleLoop(); };
+    followButton->onClick = [this]
+    {
+        follow = ! follow;
+        processor.getHostingContext().getSettings().setValue ("followPlayhead", follow);
+        refreshTransportButtons();
+    };
+
+    for (auto* b : { playButton.get(), loopButton.get(), followButton.get() })
+        addAndMakeVisible (b);
+
+    follow = processor.getHostingContext().getSettings().getBoolValue ("followPlayhead", true);
 
     updateTexts();
     i18n::addListener (this);
@@ -2260,21 +2852,19 @@ PianoRoll::~PianoRoll()
     i18n::removeListener (this);
     stopTimer();
     stopPreview();
+    processor.stopInternally();
     processor.projectChanged.removeChangeListener (this);
 }
 
 void PianoRoll::updateTexts()
 {
     helpButton.setTooltip (tr ("All mouse and keyboard actions (F1)"));
-    drawButton.setButtonText (tr ("Draw"));
-    curveButton.setButtonText (tr ("Curve"));
-    sliceButton.setButtonText (tr ("Slice"));
-    drawButton.setTooltip (tr ("Draw (P): click to add notes, drag to set their length"));
-    curveButton.setTooltip (tr ("Curve (C): click a note to add bend points, drag them to bend the pitch"));
-    sliceButton.setTooltip (tr ("Slice (S): click a note to cut it, drag up or down to cut several"));
     snapButton.setButtonText (trf ("Snap  {0}", getGridName()));
     bendButton.setTooltip (tr ("Pitch bend range. Set your synth's bend range to the same value."));
     midiButton->setTooltip (tr ("Drag into FL Studio (or any DAW) to export the notes with their bends. Click for more options."));
+    playButton->setTooltip (tr ("Play inside Curvable, even while FL is stopped (Space). Click the ruler to set where it starts."));
+    loopButton->setTooltip (tr ("Loop playback. Drag in the ruler to set the loop, double-click the ruler to remove it."));
+    followButton->setTooltip (tr ("Follow the playhead"));
     refreshBendButton();
 }
 
@@ -2327,23 +2917,14 @@ void PianoRoll::resized()
     keysBounds = keysColumn.withY (inner.getY()).withHeight (inner.getHeight());
     keyboard->setBounds (keysBounds);
 
-    // 底部工具栏
-    int toolWidths[3] {};
-    int toolsWidth = 8;
-
-    for (int i = 0; i < 3; ++i)
+    // 底部工具栏：左边是播放、循环、跟随（没有工具按钮：所有操作都在同一个编辑模式里，切开是按住 S）
+    transportBounds = bottom.removeFromLeft (3 * 44 + 8).withSizeKeepingCentre (3 * 44 + 8, 44);
     {
-        auto* b = std::array<juce::TextButton*, 3> { &drawButton, &curveButton, &sliceButton }[(size_t) i];
-        toolWidths[i] = juce::jmax (76, textWidth (*b) + 26);
-        toolsWidth += toolWidths[i];
+        auto t = transportBounds;
+        playButton->setBounds (t.removeFromLeft (44));
+        loopButton->setBounds (t.removeFromLeft (44));
+        followButton->setBounds (t.removeFromLeft (44));
     }
-
-    toolsBounds = bottom.removeFromLeft (toolsWidth).withSizeKeepingCentre (toolsWidth, 42);
-    auto tools = toolsBounds.reduced (4);
-    drawButton.setBounds (tools.removeFromLeft (toolWidths[0]));
-    curveButton.setBounds (tools.removeFromLeft (toolWidths[1]));
-    sliceButton.setBounds (tools);
-
     bottom.removeFromLeft (12);
     const auto snapWidth = juce::jmax (124, textWidth (snapButton) + 40);
     const auto bendWidth = juce::jmax (112, textWidth (bendButton) + 40);
@@ -2372,7 +2953,6 @@ void PianoRoll::resized()
         g.addTransform (juce::AffineTransform::scale (scale));
         neu::inset (g, panelBounds.toFloat(), 20.0f, palette, 5);
         neu::raised (g, keysBounds.toFloat(), 12.0f, palette, 3);
-        neu::inset (g, toolsBounds.toFloat(), 14.0f, palette, 3);
     }
 }
 
@@ -2401,28 +2981,14 @@ void PianoRoll::paint (juce::Graphics& g)
 
 juce::String PianoRoll::getHint() const
 {
-    // 只提示界面上看不出来的操作：工具、吸附、力度、滚动都有可见的控件，完整列表在 ? 里
-    if (tool == Tool::curve)
-        return tr ("Click note  Add point    Right-click note  Vibrato, trill, presets    Right-click point  Delete    Alt  No snap");
+    // 只提示界面上看不出来的操作；完整列表在 ? 里
+    if (slicing)
+        return tr ("Holding S  Click a note to cut it    Drag up or down  Cut several    Alt  No snap");
 
-    if (tool == Tool::slice)
-        return tr ("Click a note  Cut it    Drag up or down  Cut several    Alt  No snap");
-
-    // 选择没有单独的工具，所以选择的操作总是提示出来
     if (! selection.empty())
-    {
-        const auto hasPoints = std::any_of (project.notes.begin(), project.notes.end(), [this] (const Note& n)
-        {
-            return selection.count (n.id) != 0 && ! n.curve.points.empty();
-        });
+        return tr ("Shift+drag  Duplicate    Shift+click  Add or remove    \xe2\x86\x91\xe2\x86\x93  Transpose    Del  Delete");
 
-        if (hasPoints)
-            return tr ("Drag points  Bend    Shift+click  Add or remove    \xe2\x86\x91\xe2\x86\x93  Transpose    Del  Delete");
-
-        return tr ("Shift+click  Add or remove    \xe2\x86\x91\xe2\x86\x93  Transpose    Ctrl+B  Duplicate    Del  Delete");
-    }
-
-    return tr ("Ctrl+drag  Box select    Shift+click  Select several    Right-click  Delete    Alt+drag  No snap");
+    return tr ("Double-click note  Add bend point    Drag line above  Vibrato    Right-click  Menu    Hold S  Slice");
 }
 
 juce::String PianoRoll::getWarning() const
@@ -2501,6 +3067,7 @@ void PianoRoll::pullProject()
     project = processor.getProject();
     selection = editing::existingOnly (project, selection);
     refreshBendButton();
+    refreshTransportButtons();
     updateScrollBars();
     repaintContent();
 }
@@ -2632,14 +3199,35 @@ void PianoRoll::mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWhee
 }
 
 //==============================================================================
-void PianoRoll::setTool (Tool newTool)
+void PianoRoll::setSlicing (bool shouldSlice)
 {
-    tool = newTool;
-    drawButton.setToggleState (tool == Tool::draw, juce::dontSendNotification);
-    curveButton.setToggleState (tool == Tool::curve, juce::dontSendNotification);
-    sliceButton.setToggleState (tool == Tool::slice, juce::dontSendNotification);
-    noteArea->repaint(); // 曲线工具会显示节点
+    if (slicing == shouldSlice)
+        return;
+
+    slicing = shouldSlice;
+
+    // 光标、竖线和手柄跟着变（鼠标不动也要更新）
+    if (noteArea->isMouseOver())
+        noteArea->updateHover (noteArea->getMouseXYRelative().toFloat(), juce::ModifierKeys::getCurrentModifiers());
+    else
+        noteArea->hoverSliceBeat = -1.0;
+
+    noteArea->repaint();
     repaint (getLocalBounds().removeFromBottom (bottomBarHeight));
+}
+
+bool PianoRoll::keyStateChanged (bool)
+{
+    // 松开 S：回到编辑
+    if (slicing && ! juce::KeyPress::isKeyCurrentlyDown ('S'))
+        setSlicing (false);
+
+    return false;
+}
+
+void PianoRoll::focusLost (FocusChangeType)
+{
+    setSlicing (false);
 }
 
 juce::String PianoRoll::getGridName() const
@@ -2760,6 +3348,16 @@ bool PianoRoll::keyPressed (const juce::KeyPress& key)
         return true;
     }
 
+    // Space：插件内播放（设置里可以交给 FL）
+    if (code == juce::KeyPress::spaceKey && ! mods.isAnyModifierKeyDown())
+    {
+        if (processor.getHostingContext().getSettings().getBoolValue (spaceToHostKey, false))
+            return false;
+
+        togglePlayback();
+        return true;
+    }
+
     if (cmd && (code == 'Z' || code == 'z'))
     {
         if (mods.isShiftDown())
@@ -2776,9 +3374,7 @@ bool PianoRoll::keyPressed (const juce::KeyPress& key)
     if (cmd && (code == 'V' || code == 'v'))   { paste(); return true; }
     if (cmd && (code == 'B' || code == 'b' || code == 'D' || code == 'd')) { duplicateSelection(); return true; }
 
-    if (! cmd && (code == 'P' || code == 'p')) { setTool (Tool::draw); return true; }
-    if (! cmd && (code == 'C' || code == 'c')) { setTool (Tool::curve); return true; }
-    if (! cmd && (code == 'S' || code == 's')) { setTool (Tool::slice); return true; }
+    if (! cmd && (code == 'S' || code == 's')) { setSlicing (true); return true; } // 按住：切开
     if (! cmd && (code == 'G' || code == 'g')) { glideSelection(); return true; }
     if (code == juce::KeyPress::escapeKey)     { setSelection ({}); return true; }
     if (code == juce::KeyPress::F1Key || key.getTextCharacter() == '?') { showShortcuts (true); return true; }
@@ -2822,6 +3418,146 @@ void PianoRoll::flashMessage (const juce::String& text)
     flashText = text;
     flashUntil = juce::Time::getMillisecondCounter() + 4000;
     repaint (getLocalBounds().removeFromBottom (bottomBarHeight));
+}
+
+void PianoRoll::togglePlayback()
+{
+    if (processor.isPlayingInternally())
+        stopPlayback();
+    else
+        startPlayback();
+}
+
+void PianoRoll::startPlayback()
+{
+    // AUTO 模式下 FL 正在播放：由 FL 带着走，插件内播放不起作用
+    if (processor.isHostPlaying() && project.mode == PlaybackMode::automatic)
+    {
+        flashMessage (tr ("FL Studio is playing. Stop it to play inside Curvable."));
+        return;
+    }
+
+    stopPreview();
+
+    const auto loop = project.loopOn && project.hasLoop();
+    processor.playInternally (startBeat, loop ? project.loopStart : 0.0, loop ? project.loopEnd : 0.0);
+
+    if (! loop && startBeat >= roundUpToBar (project.getContentEnd()) - 1.0e-6)
+        flashMessage (tr ("Nothing to play after the start marker. Click the ruler to move it."));
+
+    refreshTransportButtons();
+}
+
+void PianoRoll::stopPlayback()
+{
+    processor.stopInternally();
+    refreshTransportButtons();
+}
+
+void PianoRoll::setStartBeat (double beat)
+{
+    startBeat = juce::jmax (0.0, beat);
+
+    // 播放中单击标尺：从那里接着播
+    if (processor.isPlayingInternally())
+        startPlayback();
+
+    ruler->repaint();
+}
+
+void PianoRoll::setLoop (double start, double end, bool on)
+{
+    auto p = processor.getProject();
+
+    if (end > start)
+    {
+        p.loopStart = juce::jmax (0.0, start);
+        p.loopEnd = end;
+        p.loopOn = on;
+    }
+    else
+    {
+        p.loopStart = p.loopEnd = 0.0;
+        p.loopOn = false;
+    }
+
+    project.loopStart = p.loopStart;
+    project.loopEnd = p.loopEnd;
+    project.loopOn = p.loopOn;
+    processor.setProject (std::move (p));
+
+    // 正在插件内播放：按新的循环区从当前位置接着播
+    if (processor.isPlayingInternally())
+    {
+        const auto at = processor.getPlayheadBeat();
+        const auto loop = project.loopOn && project.hasLoop();
+        processor.playInternally (at >= 0.0 ? at : startBeat, loop ? project.loopStart : 0.0, loop ? project.loopEnd : 0.0);
+    }
+
+    refreshTransportButtons();
+    ruler->repaint();
+    noteArea->repaint();
+}
+
+void PianoRoll::toggleLoop()
+{
+    // 有选中的音符：循环它们所在的小节；否则开关现有的循环区；都没有时循环整段内容
+    if (! selection.empty())
+    {
+        auto from = std::numeric_limits<double>::max(), to = 0.0;
+
+        for (const auto& n : project.notes)
+            if (selection.count (n.id) != 0)
+            {
+                from = std::min (from, n.start);
+                to = std::max (to, n.getEnd());
+            }
+
+        from = std::floor (from / 4.0 + 1.0e-9) * 4.0;
+        setLoop (from, juce::jmax (from + 4.0, roundUpToBar (to)), true);
+        return;
+    }
+
+    if (project.hasLoop())
+    {
+        setLoop (project.loopStart, project.loopEnd, ! project.loopOn);
+        return;
+    }
+
+    setLoop (0.0, juce::jmax (4.0, roundUpToBar (project.getContentEnd())), true);
+}
+
+void PianoRoll::refreshTransportButtons()
+{
+    playButton->setToggleState (processor.isPlayingInternally(), juce::dontSendNotification);
+    loopButton->setToggleState (project.loopOn && project.hasLoop(), juce::dontSendNotification);
+    followButton->setToggleState (follow, juce::dontSendNotification);
+}
+
+void PianoRoll::followPlayhead (double beat)
+{
+    if (! follow || beat < 0.0 || dragging)
+        return;
+
+    const auto visible = view.visibleBeats (juce::jmax (1, noteArea->getWidth()));
+
+    // 播放头走出视野（或到了右边缘）：翻一页，播放头放在左边一点
+    if (beat < view.startBeat || beat > view.startBeat + visible * 0.95)
+    {
+        view.startBeat = juce::jmax (0.0, beat - visible * 0.05);
+        clampView();
+    }
+}
+
+void PianoRoll::sliceAndSelect (const editing::IdSet& ids, double atBeat)
+{
+    editing::IdSet added;
+    edit ("Slice notes", [&] (Project& p) { added = editing::sliceNotes (p, ids, atBeat); });
+
+    // 选中切开后的两半，方便接着处理
+    auto sel = ids;
+    sel.insert (added.begin(), added.end());
+    setSelection (editing::existingOnly (project, sel));
 }
 
 void PianoRoll::glideSelection()
@@ -2877,10 +3613,19 @@ void PianoRoll::timerCallback()
         repaint (getLocalBounds().removeFromBottom (bottomBarHeight));
     }
 
+    if (playButton->getToggleState() != processor.isPlayingInternally())
+        refreshTransportButtons();
+
     const auto beat = processor.getPlayheadBeat();
 
     if (std::abs (beat - playheadBeat) < 1.0e-6)
         return;
+
+    // 播放刚停：标尺上重新显示起点
+    if ((beat < 0.0) != (playheadBeat < 0.0))
+        ruler->repaint();
+
+    followPlayhead (beat);
 
     // 只重画播放头经过的窄条
     auto strip = [this] (double b, juce::Component& c)

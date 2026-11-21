@@ -55,6 +55,12 @@ struct Project
     /** 弯音范围（单向，半音），必须与音源的设置一致，否则音高会不准。 */
     double bendRange = defaultBendRange;
 
+    /** 插件内播放的循环区（拍）。loopEnd > loopStart 时有循环区；loopOn 决定插件内播放是否在里面循环。 */
+    double loopStart = 0.0, loopEnd = 0.0;
+    bool loopOn = false;
+
+    bool hasLoop() const noexcept { return loopEnd > loopStart; }
+
     static constexpr double defaultBendRange = 2.0; ///< 大多数音源的默认值
     static constexpr double minBendRange = 1.0;
     static constexpr double maxBendRange = 96.0;

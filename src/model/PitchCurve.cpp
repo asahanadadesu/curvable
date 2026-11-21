@@ -27,7 +27,15 @@ double Vibrato::envelope (double x, double runLength) const noexcept
     if (x <= 0.0 || x >= runLength)
         return 0.0;
 
-    const auto in = shape == Shape::sine && fade > 0.0 ? std::min (1.0, x / fade) : 1.0;
+    double in = 1.0;
+
+    if (hasDrawnEnvelope())
+        in = levelAt (envelopePoints.data(), numEnvelopePoints, x / runLength);
+    else if (shape == Shape::sine && fade > 0.0)
+    {
+        in = std::min (1.0, x / fade);
+    }
+
     const auto release = std::min (maxRelease, runLength * 0.25);
     const auto out = release > 0.0 ? std::min (1.0, (runLength - x) / release) : 1.0;
     return in * out;
@@ -46,6 +54,65 @@ double Vibrato::evaluate (double x, double runLength, double secondsPerBeat) con
         return depth * env * trillWave (cycles - std::floor (cycles));
 
     return depth * env * std::sin (twoPi * cycles);
+}
+
+double Vibrato::levelAt (const EnvelopePoint* pts, int count, double u) noexcept
+{
+    if (count <= 0)
+        return 1.0;
+
+    for (int i = 0; i + 1 < count; ++i)
+    {
+        if (u <= pts[i + 1].x)
+        {
+            const auto span = pts[i + 1].x - pts[i].x;
+            const auto t = span > 0.0 ? std::clamp ((u - pts[i].x) / span, 0.0, 1.0) : 1.0;
+            return pts[i].level + (pts[i + 1].level - pts[i].level) * t;
+        }
+    }
+
+    return pts[count - 1].level;
+}
+
+std::vector<Vibrato::EnvelopePoint> Vibrato::getEnvelope (double runLength) const
+{
+    if (shape != Shape::sine)
+        return {};
+
+    if (hasDrawnEnvelope())
+        return { envelopePoints.begin(), envelopePoints.begin() + numEnvelopePoints };
+
+    if (fade <= 0.0 || runLength <= 0.0)
+        return { { 0.0, 1.0 }, { 1.0, 1.0 } };
+
+    const auto f = fade / runLength;
+
+    if (f >= 1.0)
+        return { { 0.0, 0.0 }, { 1.0, 1.0 / f } };
+
+    return { { 0.0, 0.0 }, { f, 1.0 }, { 1.0, 1.0 } };
+}
+
+void Vibrato::setEnvelope (const std::vector<EnvelopePoint>& points)
+{
+    envelopePoints = {};
+    numEnvelopePoints = 0;
+
+    for (const auto& p : points)
+        if (numEnvelopePoints < maxEnvelopePoints && std::isfinite (p.x) && std::isfinite (p.level))
+            envelopePoints[(size_t) numEnvelopePoints++] = { std::clamp (p.x, 0.0, 1.0), std::clamp (p.level, 0.0, 1.0) };
+
+    if (numEnvelopePoints < 2)
+    {
+        envelopePoints = {};
+        numEnvelopePoints = 0;
+        return;
+    }
+
+    std::stable_sort (envelopePoints.begin(), envelopePoints.begin() + numEnvelopePoints,
+                      [] (const EnvelopePoint& a, const EnvelopePoint& b) { return a.x < b.x; });
+    envelopePoints[0].x = 0.0;
+    envelopePoints[(size_t) numEnvelopePoints - 1].x = 1.0;
 }
 
 double Vibrato::trillWave (double phase) noexcept
@@ -90,6 +157,9 @@ void Vibrato::normalise()
                                   : std::clamp (std::abs (finiteOr (depth, 0.4)), 0.0, 12.0);
     rate = sync ? std::clamp (finiteOr (rate, 2.0), 0.25, 16.0) : std::clamp (finiteOr (rate, 5.5), 0.1, 20.0);
     fade = std::max (0.0, finiteOr (fade, 0.0));
+
+    if (numEnvelopePoints != 0)
+        setEnvelope ({ envelopePoints.begin(), envelopePoints.begin() + std::clamp (numEnvelopePoints, 0, maxEnvelopePoints) });
 }
 
 //==============================================================================
@@ -105,6 +175,9 @@ bool PitchCurve::pointsFlat() const noexcept
 namespace
 {
     bool isAudible (const Vibrato& v) noexcept { return v.depth != 0.0 && v.rate > 0.0; }
+
+    /** 算作一段颤音（可以编辑）：深度为 0 也算，只要速度有效。 */
+    bool isRun (const Vibrato& v) noexcept { return v.rate > 0.0; }
 }
 
 bool PitchCurve::hasSegmentVibrato() const noexcept
@@ -178,7 +251,7 @@ static void forEachRun (const PitchCurve& c, double length, Callback&& callback)
     // 回调返回 true 时停止
     if (c.vibrato.wholeNote)
     {
-        if (isAudible (c.vibrato) && length > 0.0)
+        if (isRun (c.vibrato) && length > 0.0)
         {
             PitchCurve::Run run { 0.0, length, c.vibrato, -1, -1 };
             callback (run);
@@ -196,7 +269,7 @@ static void forEachRun (const PitchCurve& c, double length, Callback&& callback)
         const auto segStart = std::min (points[i].time, length);
         const auto segEnd = std::min (i + 1 < points.size() ? points[i + 1].time : length, length);
         const auto& v = points[i].vibrato;
-        const auto active = v.has_value() && isAudible (*v) && segEnd > segStart;
+        const auto active = v.has_value() && isRun (*v) && segEnd > segStart;
 
         if (inRun && (! active || ! (*v == current.settings)))
         {

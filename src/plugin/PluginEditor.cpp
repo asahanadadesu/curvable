@@ -28,7 +28,7 @@ namespace
     constexpr auto themeKey = "theme";
     constexpr auto copiesNoticeKey = "copiesNoticeDismissed";
 
-    enum MenuIds { dayThemeId = 1, nightThemeId, clearNotesId, pluginManagerId, shortcutsId, syncCopiesId, languageBaseId = 100 };
+    enum MenuIds { dayThemeId = 1, nightThemeId, clearNotesId, pluginManagerId, shortcutsId, syncCopiesId, spaceToHostId, languageBaseId = 100 };
 
     /** 插件扫描与管理窗口（JUCE 自带的 PluginListComponent）。 */
     class PluginManagerWindow final : public juce::DocumentWindow
@@ -775,6 +775,8 @@ void CurvableEditor::showSettingsMenu()
     menu.addItem (syncCopiesId, i18n::tr ("Sync synth copies now"), hosted.getNumInstances() > 1);
     menu.addItem (pluginManagerId, i18n::tr ("Plugin manager..."));
     menu.addItem (shortcutsId, i18n::tr ("Mouse & keyboard shortcuts (F1)"));
+    menu.addItem (spaceToHostId, i18n::tr ("Space plays FL Studio, not Curvable"), true,
+                  context.getSettings().getBoolValue (PianoRoll::spaceToHostKey, false));
 
     juce::Component::SafePointer<CurvableEditor> safeThis (this);
     menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&settingsButton), [safeThis] (int result)
@@ -810,6 +812,14 @@ void CurvableEditor::showSettingsMenu()
             case clearNotesId:    replaceNotes ({}, 0, "Clear all notes"); break;
             case pluginManagerId: self->showPluginManager(); break;
             case syncCopiesId:    self->hosted.syncClones(); break;
+
+            case spaceToHostId:
+            {
+                auto& settings = self->context.getSettings();
+                settings.setValue (PianoRoll::spaceToHostKey, ! settings.getBoolValue (PianoRoll::spaceToHostKey, false));
+                settings.saveIfNeeded();
+                break;
+            }
 
             case shortcutsId:
                 self->setPage (Page::pianoRoll);

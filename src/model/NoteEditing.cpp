@@ -78,6 +78,46 @@ void resizeNotes (Project& target, const Project& original, const IdSet& ids, do
             n.length = std::max (minLength, n.length + deltaLength);
 }
 
+void trimNoteStarts (Project& target, const Project& original, const IdSet& ids, double deltaStart, double minLength)
+{
+    target.notes = original.notes;
+
+    if (const auto b = boundsOf (original, ids); b.any)
+        deltaStart = std::max (deltaStart, -b.minStart);
+
+    for (auto& n : target.notes)
+    {
+        if (ids.count (n.id) == 0)
+            continue;
+
+        const auto d = std::min (deltaStart, n.length - minLength);
+
+        if (d > 0.0)
+        {
+            if (! n.curve.points.empty())
+                n.curve = splitCurve (n.curve, d).second;
+        }
+        else if (d < 0.0)
+        {
+            for (auto& point : n.curve.points)
+                point.time -= d;
+
+            // 新加的开头保持第一个节点的音高（曲线在第一个节点之前本来就是这个值）
+            if (! n.curve.points.empty())
+            {
+                auto first = n.curve.points.front();
+                first.time = 0.0;
+                first.tension = 0.0f;
+                first.vibrato.reset();
+                n.curve.points.insert (n.curve.points.begin(), first);
+            }
+        }
+
+        n.start += d;
+        n.length -= d;
+    }
+}
+
 void changeVelocities (Project& target, const Project& original, const IdSet& ids, float delta)
 {
     target.notes = original.notes;
@@ -146,6 +186,12 @@ IdSet pasteNotes (Project& p, const std::vector<Note>& clip, double atBeat)
     }
 
     return added;
+}
+
+IdSet duplicateInPlace (Project& p, const IdSet& ids)
+{
+    const auto b = boundsOf (p, ids);
+    return b.any ? pasteNotes (p, copyNotes (p, ids), b.minStart) : IdSet {};
 }
 
 IdSet duplicateNotes (Project& p, const IdSet& ids, double grid)
@@ -527,6 +573,11 @@ std::pair<PitchCurve, PitchCurve> splitCurve (const PitchCurve& c, double cut)
     return { left, right };
 }
 
+bool canSlice (const Note& n, double atBeat) noexcept
+{
+    return atBeat > n.start + minNoteLength && atBeat < n.getEnd() - minNoteLength;
+}
+
 IdSet sliceNotes (Project& p, const IdSet& ids, double atBeat)
 {
     IdSet added;
@@ -534,7 +585,7 @@ IdSet sliceNotes (Project& p, const IdSet& ids, double atBeat)
 
     for (auto& n : p.notes)
     {
-        if (ids.count (n.id) == 0 || atBeat <= n.start + minNoteLength || atBeat >= n.getEnd() - minNoteLength)
+        if (ids.count (n.id) == 0 || ! canSlice (n, atBeat))
             continue;
 
         const auto cut = atBeat - n.start;
@@ -898,6 +949,101 @@ double snapSyncRate (const Vibrato& v, double cyclesPerBeat) noexcept
 const char* syncRateName (const Vibrato& v) noexcept
 {
     return vibratoSyncNames[nearestVibratoSyncIndex (v.shape == Vibrato::Shape::trill ? v.rate * 2.0 : v.rate)];
+}
+
+int insertEnvelopePoint (Vibrato& v, double runLength, double x)
+{
+    auto pts = v.getEnvelope (runLength);
+
+    if (pts.size() < 2 || (int) pts.size() >= Vibrato::maxEnvelopePoints || runLength <= 0.0)
+        return -1;
+
+    // 不能和首尾的点重合（首尾固定在 0 和 1）
+    x = std::clamp (x, 1.0e-4, 1.0 - 1.0e-4);
+    const auto value = Vibrato::levelAt (pts, x);
+    const auto at = (size_t) (std::upper_bound (pts.begin() + 1, pts.end() - 1, x,
+                                                [] (double u, const Vibrato::EnvelopePoint& p) { return u < p.x; }) - pts.begin());
+    pts.insert (pts.begin() + (std::ptrdiff_t) at, { x, value });
+    v.setEnvelope (pts);
+    return (int) at;
+}
+
+void addVibrato (PitchCurve& c, int segment, double depth)
+{
+    if (segment < 0)
+        setWholeNoteVibrato (c, Vibrato::Shape::sine);
+    else
+        setSegmentVibrato (c, segment, Vibrato::Shape::sine);
+
+    auto* target = segment < 0 ? &c.vibrato
+                 : (segment < (int) c.points.size() && c.points[(size_t) segment].vibrato ? &*c.points[(size_t) segment].vibrato : nullptr);
+
+    if (target == nullptr)
+        return;
+
+    target->setEnvelope ({});
+    target->depth = depth;
+    target->normalise();
+}
+
+void removeSilentVibrato (PitchCurve& c)
+{
+    if (c.vibrato.wholeNote && c.vibrato.depth == 0.0)
+        setWholeNoteVibrato (c, std::nullopt);
+
+    for (auto& p : c.points)
+        if (p.vibrato && p.vibrato->depth == 0.0)
+            p.vibrato.reset();
+}
+
+void moveEnvelopePoint (Vibrato& v, double runLength, int index, double x, double depthThere)
+{
+    auto pts = v.getEnvelope (runLength);
+
+    if (index < 0 || index >= (int) pts.size())
+        return;
+
+    const auto last = (int) pts.size() - 1;
+
+    if (index == 0)
+        x = 0.0;
+    else if (index == last)
+        x = 1.0;
+    else
+        x = std::clamp (x, pts[(size_t) index - 1].x + 1.0e-4, pts[(size_t) index + 1].x - 1.0e-4);
+
+    depthThere = std::max (0.0, depthThere);
+    const auto depth = std::abs (v.depth);
+
+    if (depthThere > depth || depth <= 0.0)
+    {
+        // 比当前深度还深：整段加深，其他点按比例调低，实际深度不变
+        const auto scale = depthThere > 0.0 ? depth / depthThere : 0.0;
+
+        for (auto& p : pts)
+            p.level *= scale;
+
+        v.depth = depthThere;
+        pts[(size_t) index] = { x, 1.0 };
+    }
+    else
+    {
+        pts[(size_t) index] = { x, depthThere / depth };
+    }
+
+    v.setEnvelope (pts);
+}
+
+bool removeEnvelopePoint (Vibrato& v, double runLength, int index)
+{
+    auto pts = v.getEnvelope (runLength);
+
+    if (index <= 0 || index >= (int) pts.size() - 1)
+        return false;
+
+    pts.erase (pts.begin() + index);
+    v.setEnvelope (pts);
+    return true;
 }
 
 void setVibratoSync (Vibrato& v, bool sync, double secondsPerBeat)

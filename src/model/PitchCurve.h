@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <optional>
 #include <vector>
 
@@ -21,12 +22,45 @@ struct Vibrato
     double depth = 0.4;        ///< sine：峰值（半音，≥ 0）；trill：相邻音的音程（半音，可为负 = 下方的音）
     double rate = 5.5;      ///< sync 为 false 时单位是 Hz；为 true 时是每拍的周期数（2 = 八分音符）
     bool sync = false;
-    double fade = 0.5;      ///< 每段颤音开头从 0 渐强到完整深度所用的时间（拍）
+    double fade = 0.5;      ///< 每段颤音开头从 0 渐强到完整深度所用的时间（拍）；画了深度包络时不用
+
+    /** 深度包络上的一个点：x 是在这一段颤音里的位置（0 = 开头，1 = 结尾），level 是完整深度的比例（0..1）。 */
+    struct EnvelopePoint
+    {
+        double x = 0.0;
+        double level = 0.0;
+
+        bool operator== (const EnvelopePoint&) const = default;
+    };
+
+    static constexpr int maxEnvelopePoints = 8;
+
+    /** 画出来的深度包络（只对 sine 有效，至少两个点，第一个在 0、最后一个在 1）。没有时用 fade。
+        用固定大小的数组：音频线程上会复制这些参数，不能分配内存。用不到的位置保持为默认值。 */
+    std::array<EnvelopePoint, maxEnvelopePoints> envelopePoints {};
+    int numEnvelopePoints = 0;
+
+    /** 有没有画出来的深度包络。 */
+    bool hasDrawnEnvelope() const noexcept { return shape == Shape::sine && numEnvelopePoints >= 2; }
+
+    /** 包络点之间直线连接，在 u（0..1）处的值。count 为 0 时为 1。不分配内存（音频线程也用）。 */
+    static double levelAt (const EnvelopePoint* points, int count, double u) noexcept;
+
+    static double levelAt (const std::vector<EnvelopePoint>& points, double u) noexcept
+    {
+        return levelAt (points.data(), (int) points.size(), u);
+    }
+
+    /** 当前生效的深度包络点（画出来的，或者由 fade 换算出来的）；trill 没有包络，返回空。界面用。 */
+    std::vector<EnvelopePoint> getEnvelope (double runLength) const;
+
+    /** 换成画出来的深度包络（排序、夹住、首尾固定在 0 和 1；少于两个点时去掉包络，改用 fade）。 */
+    void setEnvelope (const std::vector<EnvelopePoint>&);
 
     /** 一个周期有几拍。 */
     double beatsPerCycle (double secondsPerBeat) const noexcept;
 
-    /** 一段颤音里，距这段开头 x 拍处的包络（0..1）：开头渐强（trill 不渐强），结尾很快收住（不会在段尾跳变）。 */
+    /** 一段颤音里，距这段开头 x 拍处的包络（0..1）：深度包络（或开头渐强；trill 不渐强），结尾很快收住（不会在段尾跳变）。 */
     double envelope (double x, double runLength) const noexcept;
 
     /** 一段颤音里，距这段开头 x 拍处的偏移（半音）。从相位 0 开始，起振时不会跳变。 */
@@ -111,7 +145,7 @@ struct PitchCurve
     /** time 所在的颤音段；不在颤音段里时返回 false。不分配内存。 */
     bool findVibratoRun (double time, double length, Run& run) const noexcept;
 
-    /** 所有颤音段（界面用）。 */
+    /** 所有颤音段（界面用）。深度为 0 的段也算（没有声音，但仍然可以编辑）。 */
     std::vector<Run> getVibratoRuns (double length) const;
 
     /** time 所在的段（起点节点的下标）；在第一个节点之前时为 -1。 */

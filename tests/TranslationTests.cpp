@@ -138,7 +138,7 @@ TEST_CASE ("tr looks up the current language and falls back to English", "[i18n]
     const auto before = i18n::getLanguage();
 
     i18n::setLanguage (i18n::Language::chinese);
-    CHECK (i18n::tr ("Draw") == juce::String::fromUTF8 ("绘制"));
+    CHECK (i18n::tr ("Bar") == juce::String::fromUTF8 ("小节"));
     CHECK (i18n::tr ("Not in the table") == "Not in the table");
     CHECK (i18n::trf ("Snap  {0}", "1/16") == juce::String::fromUTF8 ("吸附  1/16"));
     CHECK (i18n::trf ("Added {0} notes from {1}", 3, "a.mid") == juce::String::fromUTF8 ("已从 a.mid 添加 3 个音符"));

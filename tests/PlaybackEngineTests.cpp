@@ -309,3 +309,92 @@ TEST_CASE ("missing schedule or tempo doesn't crash", "[engine]")
     engine.process (PlaybackMode::trigger, nullptr, {}, 0, nullptr, 0, out);
     CHECK (out.get().empty());
 }
+
+//==============================================================================
+TEST_CASE ("internal playback plays with the host stopped, to the end of the content", "[engine][internal]")
+{
+    EngineRunner r (single (1.0, 0.5));
+    r.engine.startInternal (0.0, 0.0, 0.0);
+
+    // 宿主停着：一样从 0 拍开始播，音符落在准确的采样上
+    for (int i = 0; i < 400; ++i)
+        r.block (480, { false, true, 0.0, EngineRunner::bpm });
+
+    REQUIRE (r.events.size() == 2);
+    CHECK (r.events[0] == AbsEvent { beatToSample (1.0), true, 60 });
+    CHECK (r.events[1] == AbsEvent { beatToSample (1.5), false, 60 });
+
+    // 内容是一小节：播完就停
+    CHECK_FALSE (r.engine.isInternalActive());
+}
+
+TEST_CASE ("internal playback loops inside the loop region with sample accuracy", "[engine][internal]")
+{
+    EngineRunner r (single (0.5, 0.25));
+    r.engine.startInternal (3.0, 0.0, 1.0); // 起点不在循环区里：从循环区开头开始
+
+    std::mt19937 rng (7);
+    std::uniform_int_distribution<int> size (1, 700);
+    long long done = 0;
+
+    while (done < beatToSample (3.0))
+    {
+        const auto n = size (rng);
+        r.block (n, { false, false, 0.0, EngineRunner::bpm }, PlaybackMode::off);
+        done += n;
+    }
+
+    // 每一拍（循环一次）响一次，位置准确到 1 个采样
+    const auto ons = r.onsFor (60);
+    REQUIRE (ons.size() == 3);
+
+    for (int i = 0; i < 3; ++i)
+        CHECK (std::abs (ons[(size_t) i].sample - beatToSample (i + 0.5)) <= 1);
+
+    CHECK (r.engine.isInternalActive());
+}
+
+TEST_CASE ("internal playback steps aside when the host takes over", "[engine][internal]")
+{
+    SECTION ("AUTO: the host starts playing")
+    {
+        EngineRunner r (single (0.0, 4.0, 64));
+        r.engine.startInternal (0.0, 0.0, 0.0);
+        r.block (480, { false, true, 0.0, EngineRunner::bpm });
+        REQUIRE (r.engine.isInternalActive());
+        REQUIRE (r.soundingPitches() == std::vector<int> { 64 });
+
+        r.block (480, { true, true, 2.0, EngineRunner::bpm });
+        CHECK_FALSE (r.engine.isInternalActive());
+        CHECK (r.onsFor (64).size() == 2); // 停下插件内播放，再从宿主位置补发
+        CHECK (r.isChronological());
+    }
+
+    SECTION ("TRIGGER: a trigger note arrives")
+    {
+        EngineRunner r (single (0.0, 4.0, 64));
+        r.engine.startInternal (0.0, 0.0, 0.0);
+        r.block (480, { false, false, 0.0, EngineRunner::bpm }, PlaybackMode::trigger);
+        REQUIRE (r.engine.isInternalActive());
+
+        r.block (480, { false, false, 0.0, EngineRunner::bpm }, PlaybackMode::trigger, { { 10, true, 60 } });
+        CHECK_FALSE (r.engine.isInternalActive());
+        CHECK (r.engine.isTriggerActive());
+    }
+
+    SECTION ("stopping leaves nothing hanging")
+    {
+        EngineRunner r (single (0.0, 4.0, 64));
+        r.engine.startInternal (0.0, 0.0, 0.0);
+        r.block (480, { false, true, 0.0, EngineRunner::bpm });
+
+        MidiEventList out;
+        r.engine.stopInternal (out);
+        for (const auto& e : out.get())
+            if (! e.isPitchWheel)
+                r.events.push_back ({ r.position + e.sampleOffset, e.noteOn, e.pitch });
+
+        CHECK (r.soundingPitches().empty());
+        CHECK_FALSE (r.engine.isInternalActive());
+    }
+}

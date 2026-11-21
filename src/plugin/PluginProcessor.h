@@ -75,6 +75,15 @@ public:
     /** 界面用：当前播放位置（拍）；没有在播放时返回负数。 */
     double getPlayheadBeat() const noexcept { return playheadBeat.load(); }
 
+    /** 插件内播放（▶ / Space）：宿主停着时也能听。从 fromBeat 开始；loopEnd > loopStart 时在循环区里循环，
+        否则播到内容结尾停止。宿主接手时自动停止（AUTO：宿主开始播放；TRIGGER：来了触发音符）。消息线程调用。 */
+    void playInternally (double fromBeat, double loopStart, double loopEnd) noexcept;
+    void stopInternally() noexcept;
+    bool isPlayingInternally() const noexcept { return internalPlaying.load(); }
+
+    /** 宿主是否正在播放（AUTO 模式下这时由宿主带着走，插件内播放让位）。 */
+    bool isHostPlaying() const noexcept { return hostPlaying.load(); }
+
     /** 宿主最近一次报告的速度（BPM）；界面用来显示以 Hz 计的颤音。 */
     double getHostBpm() const noexcept { return hostBpm.load(); }
 
@@ -104,6 +113,13 @@ private:
     std::atomic<bool> stateChanged { false };
     std::atomic<double> playheadBeat { -1.0 };
     std::atomic<double> hostBpm { 120.0 };
+    std::atomic<bool> hostPlaying { false };
+
+    // 插件内播放：消息线程提出请求，音频线程执行
+    enum class InternalRequest { none, play, stop };
+    std::atomic<InternalRequest> internalRequest { InternalRequest::none };
+    std::atomic<double> internalFrom { 0.0 }, internalLoopStart { 0.0 }, internalLoopEnd { 0.0 };
+    std::atomic<bool> internalPlaying { false };
 
     juce::UndoManager undoManager { 0, 200 };
 

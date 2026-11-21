@@ -84,6 +84,10 @@ struct HostNote
       对应的 note off 停止播放。新的触发会替换正在播放的触发。不依赖宿主是否在播放。
     - OFF：不播放。
 
+    另外还有插件内的播放（▶ / Space）：宿主停着时也能试听，任何模式下都能用。它从给定的位置开始，
+    有循环区时在循环区里循环，否则播到内容结尾停止。宿主接手时让位：AUTO 模式下宿主开始播放，
+    或 TRIGGER 模式下来了触发音符。
+
     纯 C++，只在音频线程上调用 process（prepare 除外），不分配内存。
 */
 class PlaybackEngine
@@ -108,12 +112,25 @@ public:
     bool isTriggerActive() const noexcept { return trigger.active; }
     double getTriggerPosition() const noexcept { return trigger.position; }
 
+    /** 插件内播放：下一次 process 时从 fromBeat 开始。loopEnd > loopStart 时在 [loopStart, loopEnd) 里循环
+        （起点不在循环区里时从 loopStart 开始）；否则播到内容结尾停止。 */
+    void startInternal (double fromBeat, double loopStart, double loopEnd) noexcept;
+    void stopInternal (MidiEventList& out);
+    bool isInternalActive() const noexcept { return internal.active; }
+    double getInternalPosition() const noexcept { return internal.position; }
+
 private:
     void processAuto (const HostTransport&, int numSamples, double samplesPerBeat, MidiEventList&);
     void processTrigger (int numSamples, double samplesPerBeat, const HostNote*, int numHostNotes, MidiEventList&);
     void advanceTrigger (int fromSample, int toSample, double samplesPerBeat, MidiEventList&);
+
+    /** 在 [start, end) 里从 position 往后播 [fromSample, toSample) 这一段；到达 end 时 loop 为 true 就回到 start 继续，
+        否则停止所有音符并返回 false。 */
+    bool advanceRegion (double& position, double start, double end, bool loop,
+                        int fromSample, int toSample, double samplesPerBeat, MidiEventList&);
     void startTrigger (int pitch, int sampleOffset, MidiEventList&);
     void stopEverything (int sampleOffset, MidiEventList&);
+    void beginInternal (MidiEventList&);
 
     double sampleRate = 44100.0;
     VoicePlayers player;
@@ -133,6 +150,21 @@ private:
         double cueEnd = 0.0;
         double position = 0.0;
     } trigger;
+
+    // 插件内播放
+    struct
+    {
+        bool active = false;
+        bool loop = false;
+        double start = 0.0, end = 0.0; ///< 循环区；不循环时 end 是内容结尾
+        double position = 0.0;
+    } internal;
+
+    struct
+    {
+        bool pending = false;
+        double from = 0.0, loopStart = 0.0, loopEnd = 0.0;
+    } internalRequest;
 };
 
 } // namespace curvable

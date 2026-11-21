@@ -32,6 +32,11 @@ void moveNotes (Project& target, const Project& original, const IdSet& ids, doub
 /** 改变 ids 中音符的时长（每个音符加上 deltaLength，最短为 minLength）。 */
 void resizeNotes (Project& target, const Project& original, const IdSet& ids, double deltaLength, double minLength);
 
+/** 拖动左端改变 ids 中音符的起点（终点不变）。曲线留在原来的时间位置：缩短时切掉开头那一段
+    （与 splitCurve 相同，音高不变）；拉长时节点整体后移，新加的开头沿用第一个节点的音高。
+    整组夹住，不早于 0 拍；每个音符至少保留 minLength。 */
+void trimNoteStarts (Project& target, const Project& original, const IdSet& ids, double deltaStart, double minLength);
+
 /** 改变 ids 中音符的力度（加上 delta，夹在 0.01..1）。 */
 void changeVelocities (Project& target, const Project& original, const IdSet& ids, float delta);
 
@@ -50,6 +55,9 @@ std::vector<Note> copyNotes (const Project&, const IdSet& ids);
 
 /** 在 atBeat 处粘贴，返回新音符的 id。 */
 IdSet pasteNotes (Project&, const std::vector<Note>& clip, double atBeat);
+
+/** 在原处复制一份（Shift + 拖动：拖走原来的音符，原处留下副本），返回副本的 id。 */
+IdSet duplicateInPlace (Project&, const IdSet& ids);
 
 /** 把选中的音符复制一份放在它们之后（偏移量为选区长度，按网格向上取整），返回新音符的 id。 */
 IdSet duplicateNotes (Project&, const IdSet& ids, double grid);
@@ -103,6 +111,9 @@ std::vector<int> matchVoices (const std::vector<double>& from, const std::vector
 /** 在 cut（相对音符起点，拍）处把曲线分成两段，切开前后在每个时刻的值都不变（包括弯曲程度）。
     第二段的时间从 0 开始。 */
 std::pair<PitchCurve, PitchCurve> splitCurve (const PitchCurve&, double cut);
+
+/** 能不能在 atBeat 处切开这个音符（离两端都至少 minNoteLength）。 */
+bool canSlice (const Note&, double atBeat) noexcept;
 
 /** 在 atBeat 处切开 ids 中跨过这个位置的音符（离两端都至少 minNoteLength）。
     后半段的音高改为切点处最接近的半音，曲线相应平移，所以切开后音高完全不变。返回后半段的 id。 */
@@ -164,6 +175,26 @@ void forEachVibrato (PitchCurve&, const std::function<void (Vibrato&)>& change);
 /** 套用曲线预设：节点按 noteLength / presetLength 伸缩到音符长度，颤音（含形状、范围）照搬，
     原有的曲线被替换。颤音速度不伸缩。 */
 void applyPreset (PitchCurve& target, const PitchCurve& preset, double presetLength, double noteLength);
+
+/** 深度包络（Vibrato::getEnvelope 的点；没画过时由 fade 换算，第一次编辑时变成画出来的包络）。
+    runLength 是这一段颤音的长度（拍）。 */
+
+/** 往上拉加颤音：给 segment（起点节点的下标；-1 = 整个音符）加上深度为 depth 的颤音。
+    速度沿用这个音符上已有的颤音；深度包络从头开始。 */
+void addVibrato (PitchCurve&, int segment, double depth);
+
+/** 去掉深度为 0 的颤音（没有声音的颤音：例如拖到 0 后松开）。 */
+void removeSilentVibrato (PitchCurve&);
+
+/** 在 x（这一段里的比例位置）处加一个点，值取包络在那里的值；返回它的下标，点已满时返回 -1。 */
+int insertEnvelopePoint (Vibrato&, double runLength, double x);
+
+/** 移动包络点：x 夹在相邻的点之间（首尾的点不能左右移），depthThere 是那个时刻想要的深度（半音）。
+    超过当前深度时，整段的深度跟着变大，其他点的实际深度保持不变。 */
+void moveEnvelopePoint (Vibrato&, double runLength, int index, double x, double depthThere);
+
+/** 删除包络点；首尾的点不能删（返回 false）。 */
+bool removeEnvelopePoint (Vibrato&, double runLength, int index);
 
 /** 切换颤音速度是否跟随曲速，尽量保持听起来的速度不变。 */
 void setVibratoSync (Vibrato&, bool sync, double secondsPerBeat);

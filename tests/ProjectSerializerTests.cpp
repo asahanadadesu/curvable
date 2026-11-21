@@ -68,3 +68,27 @@ TEST_CASE ("wrong type or newer version is rejected", "[serializer]")
     future.setProperty ("version", ProjectSerializer::currentVersion + 1, nullptr);
     CHECK_FALSE (ProjectSerializer::fromValueTree (future).has_value());
 }
+
+TEST_CASE ("the loop region is saved with the project", "[serializer]")
+{
+    Project p;
+    p.loopStart = 4.0;
+    p.loopEnd = 12.0;
+    p.loopOn = true;
+
+    auto restored = ProjectSerializer::fromValueTree (ProjectSerializer::toValueTree (p));
+    REQUIRE (restored.has_value());
+    CHECK (restored->hasLoop());
+    CHECK (restored->loopStart == 4.0);
+    CHECK (restored->loopEnd == 12.0);
+    CHECK (restored->loopOn);
+
+    // 没有循环区的旧工程、无效的值：没有循环区
+    auto tree = ProjectSerializer::toValueTree (Project {});
+    tree.setProperty ("loopStart", 8.0, nullptr);
+    tree.setProperty ("loopEnd", 2.0, nullptr);
+    restored = ProjectSerializer::fromValueTree (tree);
+    REQUIRE (restored.has_value());
+    CHECK_FALSE (restored->hasLoop());
+    CHECK_FALSE (restored->loopOn);
+}

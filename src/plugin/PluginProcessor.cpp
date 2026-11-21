@@ -109,6 +109,12 @@ void CurvableProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mi
         }
     }
 
+    // 宿主没报告速度时用它最近一次报告的（插件内播放也用这个速度）
+    if (! (transport.bpm > 0.0 && std::isfinite (transport.bpm)))
+        transport.bpm = hostBpm.load();
+
+    hostPlaying = transport.isPlaying;
+
     // 2. 声部 → 实例的对应关系：新的实例准备好（或被销毁）后，先在旧的对应关系下停掉所有音符，再重新开始，
     //    避免 note on 和 note off 落在不同的实例上
     //    MPE 模式开关时同样处理
@@ -165,12 +171,23 @@ void CurvableProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mi
 
     midi.clear();
 
-    // 4. 回放 Curvable 自己的音符
+    // 4. 回放 Curvable 自己的音符（插件内播放的请求在这里交给引擎）
     sketchEvents.clear();
+
+    switch (internalRequest.exchange (InternalRequest::none))
+    {
+        case InternalRequest::play: engine.startInternal (internalFrom.load(), internalLoopStart.load(), internalLoopEnd.load()); break;
+        case InternalRequest::stop: engine.stopInternal (sketchEvents); break;
+        case InternalRequest::none: break;
+    }
+
     engine.process (mode, schedule, transport, numSamples,
                     hostNotes.data(), (int) hostNotes.size(), sketchEvents);
+    internalPlaying = engine.isInternalActive();
 
-    if (mode == PlaybackMode::automatic && transport.isPlaying && transport.hasPosition)
+    if (engine.isInternalActive())
+        playheadBeat = engine.getInternalPosition();
+    else if (mode == PlaybackMode::automatic && transport.isPlaying && transport.hasPosition)
         playheadBeat = transport.ppq;
     else if (mode == PlaybackMode::trigger && engine.isTriggerActive())
         playheadBeat = engine.getTriggerPosition();
@@ -259,6 +276,21 @@ void CurvableProcessor::commitEdit (const Project& before, const juce::String& n
 
     undoManager.beginNewTransaction (name);
     undoManager.perform (new NotesEdit (*this, before.notes, after.notes, after.nextId));
+}
+
+void CurvableProcessor::playInternally (double fromBeat, double loopStart, double loopEnd) noexcept
+{
+    internalFrom = fromBeat;
+    internalLoopStart = loopStart;
+    internalLoopEnd = loopEnd;
+    internalRequest = InternalRequest::play;
+    internalPlaying = true; // 界面马上显示为正在播放（音频线程下一块确认）
+}
+
+void CurvableProcessor::stopInternally() noexcept
+{
+    internalRequest = InternalRequest::stop;
+    internalPlaying = false;
 }
 
 void CurvableProcessor::previewNote (int pitch, int velocity)
