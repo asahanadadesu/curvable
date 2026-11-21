@@ -132,6 +132,9 @@ void CurvableProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mi
         routingCount = available;
         routedMpe = mpe;
 
+        for (auto& level : voiceLevels)
+            level.reset();
+
         sketchEvents.clear();
         engine.resyncVoices (sketchEvents);
         routeEvents (sketchEvents);   // 按新的对应关系
@@ -155,6 +158,10 @@ void CurvableProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mi
             else
             {
                 voiceMidi[0].addEvent (message, metadata.samplePosition);
+
+                // 在 FL 里弹的音总要听得见（主实例上次的音符可能淡出到了静音）
+                if (message.isNoteOn())
+                    voiceLevels[0].add (metadata.samplePosition, 1.0f, 0.0f);
             }
             continue;
         }
@@ -200,13 +207,20 @@ void CurvableProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mi
         const auto& e = previewEvents[(size_t) index];
         voiceMidi[0].addEvent (e.velocity > 0 ? juce::MidiMessage::noteOn (1, e.pitch, (juce::uint8) e.velocity)
                                               : juce::MidiMessage::noteOff (1, e.pitch), 0);
+
+        if (e.velocity > 0)
+            voiceLevels[0].add (0, 1.0f, 0.0f); // 试听的音总要听得见
     });
 
     routeEvents (sketchEvents);
 
     // 5. 宿主对参数槽的自动化 → 音源参数；然后交给音源发声（各实例的输出相加）
     slots.applyToHosted();
+    hosted.setLevels (voiceLevels.data(), (int) voiceLevels.size());
     hosted.process (buffer, voiceMidi.data(), (int) voiceMidi.size(), getPlayHead(), isNonRealtime());
+
+    for (auto& level : voiceLevels)
+        level.finishBlock();
 }
 
 void CurvableProcessor::routeEvents (const MidiEventList& events) noexcept
@@ -215,6 +229,14 @@ void CurvableProcessor::routeEvents (const MidiEventList& events) noexcept
     {
         // MPE：所有声部都在主实例上，各用一个通道（2..16）
         const bool hasOwnInstance = routedMpe || e.voice < routingCount;
+
+        // 音量、声像作用于整个实例的输出：MPE 模式下（所有声部在一个实例里）、声部还没有自己的实例时不施加
+        if (e.isLevel)
+        {
+            if (hasOwnInstance && ! routedMpe)
+                voiceLevels[(std::size_t) e.voice].add (e.sampleOffset, e.gain, e.pan);
+            continue;
+        }
 
         // 声部的实例还没准备好：音符先交给主实例（暂时不弯），但弯音绝不能发过去，
         // 否则会把主实例上其他音符的弯音弄乱

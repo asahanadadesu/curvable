@@ -1,6 +1,7 @@
 #pragma once
 
 #include "plugin/PluginProcessor.h"
+#include "plugin/UpdateChecker.h"
 #include "ui/CurvableLookAndFeel.h"
 #include "ui/PianoRoll.h"
 #include "ui/SlotsPanel.h"
@@ -58,11 +59,16 @@ private:
         }
 
         void paint (juce::Graphics&) override;
-        void resized() override { dismissButton.setBounds (getLocalBounds().removeFromRight (104).reduced (6, 4)); }
+        void resized() override;
+
+        /** 第二个按钮（例如"下载"），在"知道了"左边。 */
+        void setAction (const juce::String& label, std::function<void()> onClick);
 
         const Palette& palette;
         juce::String text;
+        int lines = 2;
         juce::TextButton dismissButton { "Got it" };
+        juce::TextButton actionButton;
     };
 
     /** Synth 页右边缘的竖向把手：单击展开参数槽面板。 */
@@ -72,6 +78,13 @@ private:
         void paintButton (juce::Graphics&, bool isHighlighted, bool isDown) override;
         const Palette& palette;
         AutomationSlots& slots;
+    };
+
+    /** 左上角 Logo 上的透明按钮：单击在浏览器里打开 Curvable 的仓库。 */
+    struct LogoLink final : public juce::Button
+    {
+        LogoLink() : juce::Button ("Curvable on GitHub") { setMouseCursor (juce::MouseCursor::PointingHandCursor); }
+        void paintButton (juce::Graphics&, bool, bool) override {}
     };
 
     /** 圆形图标按钮（设置）。 */
@@ -93,6 +106,7 @@ private:
     void applyTheme (bool dark);
     void showSettingsMenu();
     void updateNotice();
+    void handleUpdateCheck();
     void rebuildChrome();
 
     /** 在 Synth 页嵌入音源界面（或隐藏它），并让窗口贴合它。 */
@@ -127,6 +141,7 @@ private:
     juce::TextButton synthButton;
     juce::TextButton mpeButton { "MPE" };
     GearButton settingsButton { palette };
+    LogoLink logoLink;
 
     PianoRoll pianoRoll { processor, palette };
     SynthBrowser browser;
@@ -144,6 +159,11 @@ private:
     }
     void setSlotsOpen (bool);
     NoticeCard copiesNotice { palette };
+    NoticeCard welcomeNotice { palette }; ///< 第一次打开（或者更新后第一次打开）时的说明
+    NoticeCard updateCard { palette };    ///< 有新版本
+
+    juce::SharedResourcePointer<UpdateChecker> updates;
+    bool welcomeIsUpgrade = false; ///< 以前用过 Curvable：显示"新功能"，而不是"欢迎"
 
     juce::Rectangle<int> logoBounds, tabsBounds, modesBounds;
     juce::Image chrome;

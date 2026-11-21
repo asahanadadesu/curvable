@@ -2,6 +2,32 @@
 
 All notable changes to Curvable are listed here. Versions follow [Semantic Versioning](https://semver.org).
 
+## [0.2.0]
+
+### One editing mode
+
+- The Draw, Curve and Slice tools are gone. Every action is available at any time: hovered and selected notes show their bend points and handles, double-click a note to add a point, and right-click a note for its menu.
+- Drag a note's left end to change where it starts, Shift + drag to duplicate, right-drag to delete, and hold S to slice.
+- Vibrato is edited on the note: pull up the amber line above a note to add it, add points to the line to shape the depth over time, and drag the blue handle to change the speed. Depth can go down to zero. The shaped line replaces the fade-in bar.
+- The bottom bar explains whatever is under the mouse, and a card shows what is new the first time a version is opened.
+
+### Volume and pan
+
+- Every note can have its own volume curve and pan curve, drawn in the VOL and PAN lanes below the notes. Curvable applies them to the output of each synth copy, so they work with any synth.
+- Ready-made fade in, fade out and swell. Shapes are copied to all selected notes, stretched to each note's length.
+- Slicing, trimming and gliding keep the curves in place. They have no effect in MPE mode and are not included in MIDI export.
+
+### Playback
+
+- Curvable can play its notes while the host is stopped: press Space or the play button. Click the ruler to set the start, drag in it to set a loop, and turn on follow to scroll with the playhead. The host takes over when it starts playing.
+- Dragging a bend point plays the note at that pitch.
+- A setting lets Space control FL Studio instead.
+
+### Other
+
+- Curvable checks GitHub for new releases at most once a day and offers the installer when one is out. It can be turned off in the settings menu.
+- The logo opens the project's page on GitHub.
+
 ## [0.1.0]
 
 First public release.

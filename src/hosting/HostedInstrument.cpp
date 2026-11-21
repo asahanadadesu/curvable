@@ -685,6 +685,8 @@ void HostedInstrument::process (juce::AudioBuffer<float>& output, juce::MidiBuff
     lastNonRealtime = isNonRealtime;
 
     const auto blockSeconds = numSamples / juce::jmax (1.0, sampleRate);
+    const auto* levels = std::exchange (pendingLevels, nullptr);
+    const auto numLevels = std::exchange (numPendingLevels, 0);
     int awake = 0;
     bool anyOutput = false; // 是否已有实例写入了 output
 
@@ -739,8 +741,9 @@ void HostedInstrument::process (juce::AudioBuffer<float>& output, juce::MidiBuff
             state.silentSeconds = 0.0;
         }
 
-        // 主输出总线的声道位于缓冲区最前面；单声道输出复制到两边。各实例的输出相加
+        // 主输出总线的声道位于缓冲区最前面；单声道输出复制到两边。各实例的输出（乘上音量、声像后）相加
         const auto hostedOutputs = plugin->getMainBusNumOutputChannels();
+        const auto* level = levels != nullptr && i < numLevels && ! levels[i].isUnity() ? &levels[i] : nullptr;
 
         for (int ch = 0; ch < output.getNumChannels(); ++ch)
         {
@@ -748,6 +751,13 @@ void HostedInstrument::process (juce::AudioBuffer<float>& output, juce::MidiBuff
             {
                 if (! anyOutput)
                     output.clear (ch, 0, numSamples);
+            }
+            else if (level != nullptr)
+            {
+                if (! anyOutput)
+                    output.clear (ch, 0, numSamples);
+
+                level->addTo (output.getWritePointer (ch), scratch.getReadPointer (juce::jmin (ch, hostedOutputs - 1)), ch, numSamples);
             }
             else if (! anyOutput)
             {

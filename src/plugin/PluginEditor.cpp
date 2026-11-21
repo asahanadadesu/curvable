@@ -27,8 +27,10 @@ namespace
 
     constexpr auto themeKey = "theme";
     constexpr auto copiesNoticeKey = "copiesNoticeDismissed";
+    constexpr auto welcomeKey = "welcomeSeenVersion"; ///< 看过哪个版本的欢迎 / 新功能说明
 
-    enum MenuIds { dayThemeId = 1, nightThemeId, clearNotesId, pluginManagerId, shortcutsId, syncCopiesId, spaceToHostId, languageBaseId = 100 };
+    enum MenuIds { dayThemeId = 1, nightThemeId, clearNotesId, pluginManagerId, shortcutsId, syncCopiesId, spaceToHostId,
+                   autoUpdateId, checkUpdateId, downloadUpdateId, languageBaseId = 100 };
 
     /** 插件扫描与管理窗口（JUCE 自带的 PluginListComponent）。 */
     class PluginManagerWindow final : public juce::DocumentWindow
@@ -74,14 +76,44 @@ void CurvableEditor::NoticeCard::paint (juce::Graphics& g)
     const auto r = getLocalBounds().toFloat().reduced (4.0f);
     neu::raised (g, r, 14.0f, palette, 4);
 
-    auto textArea = getLocalBounds().reduced (18, 4).withTrimmedRight (100);
+    const auto buttonsLeft = actionButton.isVisible() ? actionButton.getX() : dismissButton.getX();
+    auto textArea = getLocalBounds().reduced (18, 4).withRight (buttonsLeft - 4);
     g.setColour (palette.warm);
     g.fillEllipse (juce::Rectangle<float> (8.0f, 8.0f).withCentre ({ (float) textArea.getX() + 4.0f, (float) textArea.getCentreY() }));
     textArea.removeFromLeft (16);
 
     g.setColour (palette.text);
     g.setFont (juce::FontOptions (13.0f));
-    g.drawFittedText (text, textArea, juce::Justification::centredLeft, 2, 0.9f);
+    g.drawFittedText (text, textArea, juce::Justification::centredLeft, lines, 0.9f);
+}
+
+void CurvableEditor::NoticeCard::resized()
+{
+    auto area = getLocalBounds().reduced (0, juce::jmax (4, (getHeight() - 42) / 2));
+    auto fit = [] (juce::TextButton& b)
+    {
+        const auto font = b.getLookAndFeel().getTextButtonFont (b, 34);
+        return juce::jmax (104, juce::GlyphArrangement::getStringWidthInt (font, b.getButtonText()) + 36);
+    };
+
+    dismissButton.setBounds (area.removeFromRight (fit (dismissButton)).reduced (6, 0));
+
+    if (actionButton.isVisible())
+        actionButton.setBounds (area.removeFromRight (fit (actionButton)).reduced (6, 0));
+}
+
+void CurvableEditor::NoticeCard::setAction (const juce::String& label, std::function<void()> onClick)
+{
+    if (actionButton.getParentComponent() == nullptr)
+    {
+        CurvableLookAndFeel::setStyle (actionButton, "pill");
+        actionButton.setWantsKeyboardFocus (false);
+        addAndMakeVisible (actionButton);
+    }
+
+    actionButton.setButtonText (label);
+    actionButton.onClick = std::move (onClick);
+    resized();
 }
 
 //==============================================================================
@@ -233,6 +265,10 @@ CurvableEditor::CurvableEditor (CurvableProcessor& p)
     settingsButton.onClick = [this] { showSettingsMenu(); };
     addAndMakeVisible (settingsButton);
 
+    logoLink.setWantsKeyboardFocus (false);
+    logoLink.onClick = [] { juce::URL ("https://github.com/asahanadadesu/curvable").launchInDefaultBrowser(); };
+    addChildComponent (logoLink);
+
     // 主体
     addAndMakeVisible (pianoRoll);
 
@@ -277,6 +313,46 @@ CurvableEditor::CurvableEditor (CurvableProcessor& p)
     };
     addChildComponent (copiesNotice);
 
+    // 欢迎 / 新功能：每个版本第一次打开时一次
+    {
+        auto& settings = context.getSettings();
+        welcomeIsUpgrade = settings.getValue (welcomeKey).isNotEmpty() || settings.containsKey (copiesNoticeKey)
+                           || settings.containsKey (themeKey) || settings.containsKey (languageKey);
+    }
+
+    auto markWelcomeSeen = [this]
+    {
+        context.getSettings().setValue (welcomeKey, UpdateChecker::currentVersion());
+        context.getSettings().saveIfNeeded();
+        updateNotice();
+    };
+    welcomeNotice.lines = 3;
+    welcomeNotice.dismissButton.onClick = markWelcomeSeen;
+    welcomeNotice.setAction ({}, [this, markWelcomeSeen]
+    {
+        markWelcomeSeen();
+        setPage (Page::pianoRoll);
+        pianoRoll.showShortcuts (true);
+    });
+    addChildComponent (welcomeNotice);
+
+    // 新版本
+    updateCard.dismissButton.onClick = [this]
+    {
+        if (const auto release = updates->getNewerRelease())
+            updates->dismiss (*release);
+    };
+    updateCard.setAction ({}, [this]
+    {
+        if (const auto release = updates->getNewerRelease())
+        {
+            UpdateChecker::openDownload (*release);
+            updates->dismiss (*release);
+        }
+    });
+    addChildComponent (updateCard);
+    updates->addChangeListener (this);
+
     slotsPanel.onClose = [this] { setSlotsOpen (false); };
     addChildComponent (slotsPanel);
 
@@ -296,6 +372,7 @@ CurvableEditor::CurvableEditor (CurvableProcessor& p)
     setResizeLimits (defaultMinWidth, defaultMinHeight, 4096, 2160);
     setSize (1000, 620);
     refresh();
+    updates->checkIfDue();
 
     // 已经加载了音源时，打开窗口直接显示音源页
     if (hosted.isLoaded())
@@ -309,6 +386,7 @@ CurvableEditor::~CurvableEditor()
     processor.projectChanged.removeChangeListener (this);
     hosted.removeChangeListener (this);
     processor.getAutomationSlots().changed.removeChangeListener (this);
+    updates->removeChangeListener (this);
     detachEmbeddedEditor();
 
     // 窗口关闭时销毁音源界面，下次打开再重建（插件的原生子窗口不能比我们的窗口活得更久）
@@ -346,6 +424,9 @@ void CurvableEditor::resized()
         logoBounds = toolbar.removeFromLeft (150);
         toolbar.removeFromLeft (8);
     }
+
+    logoLink.setBounds (logoBounds);
+    logoLink.setVisible (! logoBounds.isEmpty());
 
     // 分段按钮组：凹槽 + 按钮
     auto layoutGroup = [&] (juce::Rectangle<int>& groupBounds, std::initializer_list<std::pair<juce::Button*, int>> buttons)
@@ -593,6 +674,12 @@ void CurvableEditor::changeListenerCallback (juce::ChangeBroadcaster* source)
         return;
     }
 
+    if (source == &*updates)
+    {
+        handleUpdateCheck();
+        return;
+    }
+
     refresh();
 }
 
@@ -685,18 +772,47 @@ void CurvableEditor::setSlotsOpen (bool shouldBeOpen)
 
 void CurvableEditor::updateNotice()
 {
-    const bool show = page == Page::pianoRoll && hosted.isLoaded() && hosted.getNumInstances() > 1
-                      && ! browser.isVisible() && ! context.getSettings().getBoolValue (copiesNoticeKey, false);
+    auto& settings = context.getSettings();
+    const bool onPianoRoll = page == Page::pianoRoll && ! browser.isVisible();
+    const auto release = updates->getNewerRelease();
 
-    if (show)
+    // 从上往下：欢迎 / 新功能、新版本、音源副本的提醒
+    const std::pair<NoticeCard*, bool> cards[] = {
+        { &welcomeNotice, onPianoRoll && settings.getValue (welcomeKey) != UpdateChecker::currentVersion() },
+        { &updateCard,    onPianoRoll && release.has_value() && ! updates->isDismissed (*release) },
+        { &copiesNotice,  onPianoRoll && hosted.isLoaded() && hosted.getNumInstances() > 1 && ! settings.getBoolValue (copiesNoticeKey, false) },
+    };
+
+    const auto body = getBodyArea();
+    const auto width = juce::jmin (760, body.getWidth() - 40);
+    auto y = body.getY() + 52;
+
+    for (const auto& [card, show] : cards)
     {
-        const auto body = getBodyArea();
-        const auto width = juce::jmin (680, body.getWidth() - 40);
-        copiesNotice.setBounds (juce::Rectangle<int> (width, 58).withCentre ({ body.getCentreX(), body.getY() + 80 }));
-        copiesNotice.toFront (false);
+        if (show)
+        {
+            const auto height = card->lines > 2 ? 78 : 58;
+            card->setBounds (body.getCentreX() - width / 2, y, width, height);
+            card->toFront (false);
+            y += height + 8;
+        }
+
+        card->setVisible (show);
+    }
+}
+
+void CurvableEditor::handleUpdateCheck()
+{
+    if (updates->getState() != UpdateChecker::State::checking && updates->wasManual())
+    {
+        if (updates->getState() == UpdateChecker::State::failed)
+            pianoRoll.flashMessage (i18n::tr ("Couldn't check for updates. Check the internet connection and try again."));
+        else if (const auto release = updates->getNewerRelease(); ! release.has_value())
+            pianoRoll.flashMessage (i18n::trf ("Curvable is up to date ({0}).", UpdateChecker::currentVersion()), false);
     }
 
-    copiesNotice.setVisible (show);
+    updateTexts();
+    updateNotice();
 }
 
 void CurvableEditor::timerCallback()
@@ -723,8 +839,29 @@ void CurvableEditor::updateTexts()
     offModeButton.setTooltip (i18n::tr ("Don't play Curvable's notes"));
     mpeButton.setTooltip (i18n::tr ("For synths with MPE turned on: one copy of the synth, every bending note on its own MIDI channel. Bend in the piano roll must match the synth's MPE bend range (usually 48), which is separate from the patch's normal bend range."));
     settingsButton.setTooltip (i18n::tr ("Settings"));
+    logoLink.setTooltip (i18n::tr ("Open Curvable on GitHub"));
     copiesNotice.text = i18n::tr ("Curvable now runs several copies of your synth so notes can bend on their own. Turn off the synth's own reverb and delay and use FL's effects instead, or they will stack up.");
     copiesNotice.dismissButton.setButtonText (i18n::tr ("Got it"));
+
+    welcomeNotice.text = welcomeIsUpgrade
+        ? i18n::trf ("New in {0}: one mode for all editing, Space plays inside Curvable, and VOL and PAN under the notes set each note's volume and pan. The bar at the bottom explains whatever is under the mouse.",
+                     UpdateChecker::currentVersion())
+        : i18n::tr ("Welcome to Curvable. Load a synth, click to add notes, then bend them. The bar at the bottom explains whatever is under the mouse, and F1 shows every shortcut.");
+    welcomeNotice.dismissButton.setButtonText (i18n::tr ("Got it"));
+    welcomeNotice.actionButton.setButtonText (i18n::tr ("All shortcuts"));
+
+    if (const auto release = updates->getNewerRelease())
+        updateCard.text = i18n::trf ("Curvable {0} is available (you have {1}). Download it, close FL Studio and run the installer.",
+                                     release->version, UpdateChecker::currentVersion());
+
+    updateCard.dismissButton.setButtonText (i18n::tr ("Later"));
+    updateCard.actionButton.setButtonText (i18n::tr ("Download"));
+
+    for (auto* card : { &welcomeNotice, &updateCard, &copiesNotice })
+    {
+        card->resized();
+        card->repaint();
+    }
     slotsHandle.setTooltip (i18n::tr ("Automation slots: let FL automate knobs of the synth"));
     browser.updateTexts();
     slotsPanel.updateTexts();
@@ -777,6 +914,14 @@ void CurvableEditor::showSettingsMenu()
     menu.addItem (shortcutsId, i18n::tr ("Mouse & keyboard shortcuts (F1)"));
     menu.addItem (spaceToHostId, i18n::tr ("Space plays FL Studio, not Curvable"), true,
                   context.getSettings().getBoolValue (PianoRoll::spaceToHostKey, false));
+    menu.addSeparator();
+
+    if (const auto release = updates->getNewerRelease())
+        menu.addItem (downloadUpdateId, i18n::trf ("Download Curvable {0}", release->version));
+
+    const auto checking = updates->getState() == UpdateChecker::State::checking;
+    menu.addItem (checkUpdateId, checking ? i18n::tr ("Checking for updates...") : i18n::tr ("Check for updates now"), ! checking);
+    menu.addItem (autoUpdateId, i18n::tr ("Check for updates automatically"), true, updates->isAutoCheckEnabled());
 
     juce::Component::SafePointer<CurvableEditor> safeThis (this);
     menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&settingsButton), [safeThis] (int result)
@@ -824,6 +969,14 @@ void CurvableEditor::showSettingsMenu()
             case shortcutsId:
                 self->setPage (Page::pianoRoll);
                 self->pianoRoll.showShortcuts (true);
+                break;
+
+            case checkUpdateId:  self->updates->checkNow(); break;
+            case autoUpdateId:   self->updates->setAutoCheckEnabled (! self->updates->isAutoCheckEnabled()); break;
+
+            case downloadUpdateId:
+                if (const auto release = self->updates->getNewerRelease())
+                    UpdateChecker::openDownload (*release);
                 break;
             default: break;
         }

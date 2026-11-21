@@ -12,12 +12,15 @@ Curvable is designed for FL Studio on Windows, whose piano roll cannot bend the 
 
 ## Features
 
-- **Per-note pitch curves.** Add points, drag them to any pitch, and shape each segment from straight to strongly curved. Points snap to semitones and the grid; hold Alt for free movement.
-- **Vibrato and trill.** Apply them to the whole note or to chosen segments, each with its own settings. Set depth, speed and fade-in with handles on the note. Speed can be in Hz or locked to the tempo.
+- **One editing mode.** Add notes, bend them, add vibrato and slice them without switching tools. The bottom bar explains whatever is under the mouse.
+- **Per-note pitch curves.** Double-click a note to add points, drag them to any pitch, and shape each segment from straight to strongly curved. Points snap to semitones and the grid; hold Alt for free movement.
+- **Vibrato and trill.** Pull up the line above a note to add vibrato, draw how its depth changes over time, and drag a handle to set the speed. Apply it to the whole note or to chosen segments, each with its own settings. Speed can be in Hz or locked to the tempo.
 - **Ready-made bends.** Scoop, overshoot, bend and release, fall and doit, from the right-click menu.
 - **Curve presets.** Save a curve and apply it to any number of notes in any project. It stretches to each note's length.
 - **Glide.** Merge a line of notes into one legato note that slides between the pitches. Glide between chords, voice by voice.
-- **Slice tool.** Cut notes without changing how they sound.
+- **Slicing.** Hold S and click to cut notes without changing how they sound.
+- **Per-note volume and pan.** Draw a volume or pan curve for each note, for example to fade one note of a chord out while the others hold. Works with any synth.
+- **Playback inside Curvable.** Press Space to listen while the host is stopped, with a start marker and a loop set in the ruler.
 - **Independent bends for any synth.** Up to 16 notes can bend independently at the same time. Idle copies of the synth pause to save CPU.
 - **MPE mode** for synths with MPE support: one copy of the synth, one MIDI channel per bending note.
 - **MIDI import and export.** Drop a MIDI file into the piano roll; its pitch bends become curves. Drag the notes out to FL Studio or any DAW, with their bends, as one channel per voice or as MPE.
@@ -50,11 +53,11 @@ Then rescan plugins in your host. In FL Studio, open **Options > Manage plugins*
 
 1. In FL Studio, add **Curvable** to the Channel rack as an instrument.
 2. Click **Load synth** at the top right and choose a synth. Synths that FL Studio already knows appear in the list; you can also drag a `.vst3` file or a plugin from FL Studio's browser onto Curvable.
-3. Draw notes in Curvable's piano roll with the **Draw** tool.
-4. Switch to the **Curve** tool, click a note to add a bend point and drag it up or down. Right-click a note for vibrato, trill, ready-made bends and presets.
-5. Set **Bend** at the bottom to the pitch bend range of your synth, and set the synth to the same value. Press play in FL Studio.
+3. Click in Curvable's piano roll to add notes.
+4. Double-click a note to add a bend point and drag it up or down. Pull up the line just above a note to add vibrato. Right-click a note for trill, ready-made bends and presets.
+5. Set **Bend** at the bottom to the pitch bend range of your synth, and set the synth to the same value. Press **Space** to listen in Curvable, or play in FL Studio.
 
-Press **F1** or click **?** in Curvable for the full list of mouse and keyboard actions.
+The text at the right of the bottom bar explains whatever is under the mouse. Press **F1** or click **?** for the full list of mouse and keyboard actions.
 
 ![The Synth page shows the hosted synth's own interface, with the automation slots panel on the right](docs/images/synth-page.png)
 
@@ -69,6 +72,7 @@ Press **F1** or click **?** in Curvable for the full list of mouse and keyboard 
 - CPU and memory use grow with the number of copies. Sample-based instruments use extra memory for every copy.
 - Free-running LFOs and random oscillator phases can make the copies sound slightly different. Turn on retrigger in the synth where available.
 - The pitch bend range in Curvable must match the synth's. If bends sound too wide or too narrow, check this first.
+- Curvable checks GitHub for new releases at most once a day. It only reads the public release information. You can turn this off in the settings menu.
 
 ## License
 

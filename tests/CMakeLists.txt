@@ -13,12 +13,14 @@ target_sources(curvable_tests PRIVATE
     RollViewTests.cpp
     PitchCurveTests.cpp
     VoiceAllocatorTests.cpp
+    EnvelopeTests.cpp
     ExpressionTests.cpp
     GlideTests.cpp
     SliceChordTests.cpp
     TrillPresetTests.cpp
     MidiExchangeTests.cpp
     TranslationTests.cpp
+    VersionTests.cpp
     ${CURVABLE_JUCE_MODEL_SOURCES}
 )
 

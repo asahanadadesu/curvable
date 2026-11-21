@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.25)
 
-project(Curvable VERSION 0.1.0 LANGUAGES C CXX)
+project(Curvable VERSION 0.2.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -89,6 +89,7 @@ target_sources(Curvable PRIVATE
     src/plugin/PluginProcessor.cpp
     src/plugin/PluginEditor.cpp
     src/plugin/AutomationSlots.cpp
+    src/plugin/UpdateChecker.cpp
     src/ui/SlotsPanel.cpp
     src/ui/SynthBrowser.cpp
     src/ui/Theme.cpp

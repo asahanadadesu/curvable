@@ -16,7 +16,7 @@ namespace
     constexpr int keysWidth       = 60;
     constexpr int keysGap         = 10;
     constexpr int rulerHeight     = 28;
-    constexpr int velocityHeight  = 56;
+    constexpr int velocityHeight  = 72;
     constexpr int velocityGap     = 8;
     constexpr int scrollBarSize   = 10;
     constexpr int scrollBarGap    = 6;
@@ -97,6 +97,8 @@ struct PianoRoll::Keyboard final : public juce::Component
     }
 
     void mouseDown (const juce::MouseEvent& e) override  { press (owner.view.yToPitch (e.position.y)); }
+    void mouseEnter (const juce::MouseEvent&) override   { owner.setHoverHint (tr ("Click a key  Hear the pitch")); }
+    void mouseExit (const juce::MouseEvent&) override    { owner.setHoverHint ({}); }
     void mouseDrag (const juce::MouseEvent& e) override  { press (owner.view.yToPitch (e.position.y)); }
     void mouseUp (const juce::MouseEvent&) override
     {
@@ -298,7 +300,10 @@ struct PianoRoll::Ruler final : public juce::Component
                               && (std::abs (e.position.x - (float) v.beatToX (owner.project.loopStart)) <= 5.0f
                                   || std::abs (e.position.x - (float) v.beatToX (owner.project.loopEnd)) <= 5.0f);
         setMouseCursor (nearEdge ? juce::MouseCursor::LeftRightResizeCursor : juce::MouseCursor::PointingHandCursor);
+        owner.setHoverHint (tr ("Click  Set the start    Drag  Set a loop    Double-click  Remove the loop    Right-click  Menu"));
     }
+
+    void mouseExit (const juce::MouseEvent&) override { owner.setHoverHint ({}); }
 
     void showMenu()
     {
@@ -1646,6 +1651,8 @@ struct PianoRoll::NoteArea final : public juce::Component
             clearHover();
             setFocusNote (0);
         }
+
+        owner.setHoverHint ({});
     }
 
     //==============================================================================
@@ -2193,6 +2200,39 @@ struct PianoRoll::NoteArea final : public juce::Component
             setMouseCursor (hit.edge != 0 ? juce::MouseCursor::LeftRightResizeCursor : juce::MouseCursor::DraggingHandCursor);
         else
             setMouseCursor (juce::MouseCursor::CrosshairCursor);
+
+        owner.setHoverHint (hintFor (curveHit, hit));
+    }
+
+    /** 底部提示栏：鼠标下的控件怎么用（界面上看不出来的操作）。 */
+    static juce::String hintFor (const CurveHit& curveHit, const Hit& hit)
+    {
+        if (curveHit.id != 0)
+        {
+            switch (curveHit.control)
+            {
+                case VibratoControl::depthLine:     return tr ("Drag  Depth (trill: the other note)    Double-click  Add a depth point    Right-click  Vibrato menu");
+                case VibratoControl::envelopePoint: return tr ("Drag  Shape the vibrato depth    Right-click  Delete the point");
+                case VibratoControl::addLine:       return tr ("Drag up  Add vibrato here");
+                case VibratoControl::speedPost:     return tr ("Drag left or right  Vibrato speed");
+                case VibratoControl::none:          break;
+            }
+
+            if (curveHit.point >= 0)
+                return tr ("Drag  Move the point    Right-click  Delete it");
+
+            if (curveHit.segment >= 0)
+                return tr ("Drag up or down  Change the curve shape");
+        }
+
+        if (hit.id != 0)
+        {
+            if (hit.edge > 0) return tr ("Drag  Change the length    Alt  No snap");
+            if (hit.edge < 0) return tr ("Drag  Change where the note starts    Alt  No snap");
+            return tr ("Drag  Move    Double-click  Add bend point    Right-click  Note menu    Alt+wheel  Velocity");
+        }
+
+        return {};
     }
 
     void clearHover()
@@ -2329,6 +2369,9 @@ struct PianoRoll::VelocityLane final : public juce::Component
         return best;
     }
 
+    void mouseEnter (const juce::MouseEvent&) override { owner.setHoverHint (tr ("Drag a bar  Change velocity (selected notes change together)")); }
+    void mouseExit (const juce::MouseEvent&) override  { owner.setHoverHint ({}); }
+
     void mouseDown (const juce::MouseEvent& e) override
     {
         owner.grabKeyboardFocus();
@@ -2366,6 +2409,504 @@ struct PianoRoll::VelocityLane final : public juce::Component
     NoteId grabbed = 0;
     float grabbedVelocity = 0.0f;
     editing::IdSet ids;
+};
+
+//==============================================================================
+// 音量、声像栏：每个音符画自己的包络，操作与音高曲线相同：双击加点，拖点移动，右键删点；
+// 拖音符的线整条抬高或降低；右键其他地方弹出菜单（淡入、淡出等）。选中的音符一起编辑
+struct PianoRoll::EnvelopeLane final : public juce::Component
+{
+    explicit EnvelopeLane (PianoRoll& o) : owner (o) {}
+
+    bool isVolume() const noexcept { return owner.lane == LaneKind::volume; }
+
+    static Envelope& envelopeOf (Note& n, bool volume)             { return volume ? n.volume : n.pan; }
+    static const Envelope& envelopeOf (const Note& n, bool volume) { return volume ? n.volume : n.pan; }
+
+    // 值（分贝 / 声像） ↔ 栏里的高度比例（0 = 底部，1 = 顶部）。音量按推子位置（0 dB 在约 70% 处）；声像：上面是左
+    static double toLevel (double value, bool volume)
+    {
+        return volume ? envelope::faderFromDecibels (value) : (1.0 - std::clamp (value, -1.0, 1.0)) * 0.5;
+    }
+
+    static double fromLevel (double level, bool volume)
+    {
+        level = std::clamp (level, 0.0, 1.0);
+        return volume ? envelope::decibelsFromFader (level) : 1.0 - level * 2.0;
+    }
+
+    /** 音符 n 的包络在 time（相对音符起点）处的值。 */
+    double valueAt (const Note& n, double time) const
+    {
+        time = juce::jlimit (0.0, n.length, time);
+        return isVolume() ? envelope::volumeAt (n.volume, time) : n.pan.evaluate (time);
+    }
+
+    float valueToY (double value) const { return 4.0f + (float) (1.0 - toLevel (value, isVolume())) * ((float) getHeight() - 8.0f); }
+    double yToValue (float y) const     { return fromLevel (1.0 - (y - 4.0) / std::max (1.0, (double) getHeight() - 8.0), isVolume()); }
+
+    static juce::String formatValue (double value, bool volume)
+    {
+        if (volume)
+            return value <= envelope::volumeMin ? juce::String ("-inf dB") : juce::String (value, 1) + " dB";
+
+        const auto percent = juce::roundToInt (std::abs (value) * 100.0);
+        return percent == 0 ? juce::String ("C") : (value < 0.0 ? "L " : "R ") + juce::String (percent) + "%";
+    }
+
+    //==============================================================================
+    void paint (juce::Graphics& g) override
+    {
+        const auto& p = owner.palette;
+        const auto& v = owner.view;
+        const auto w = (float) getWidth(), h = (float) getHeight();
+        const auto volume = isVolume();
+
+        // 参考线：0 dB / 居中
+        const float dashes[] = { 3.0f, 4.0f };
+        g.setColour (p.lineStrong);
+        g.drawDashedLine ({ 0.0f, valueToY (0.0), w, valueToY (0.0) }, dashes, 2, 1.0f);
+
+        g.setFont (juce::FontOptions (10.0f, juce::Font::bold));
+        g.setColour (p.muted.withAlpha (0.8f));
+
+        if (volume)
+        {
+            g.drawText ("0 dB", juce::Rectangle<float> (w - 40.0f, valueToY (0.0) - 13.0f, 36.0f, 12.0f), juce::Justification::centredRight);
+        }
+        else
+        {
+            g.drawText ("L", juce::Rectangle<float> (w - 16.0f, 2.0f, 12.0f, 12.0f), juce::Justification::centredRight);
+            g.drawText ("R", juce::Rectangle<float> (w - 16.0f, h - 14.0f, 12.0f, 12.0f), juce::Justification::centredRight);
+        }
+
+        for (const auto& n : owner.project.notes)
+        {
+            const auto x0 = (float) v.beatToX (n.start), x1 = (float) v.beatToX (n.getEnd());
+
+            if (x1 < 0.0f || x0 > w)
+                continue;
+
+            const auto selected = owner.selection.count (n.id) != 0;
+            const auto focused = n.id == hoverNote || n.id == dragNote;
+            const auto& env = envelopeOf (n, volume);
+            const auto colour = selected ? p.warm : p.noteColour (n.velocity).withMultipliedAlpha (focused ? 1.0f : 0.7f);
+
+            juce::Path line;
+            const auto from = juce::jmax (x0, -2.0f), to = juce::jmin (x1, w + 2.0f);
+            auto yAt = [&] (float x) { return valueToY (valueAt (n, v.xToBeat (x) - n.start)); };
+            line.startNewSubPath (from, yAt (from));
+
+            for (auto x = from + 3.0f; x < to; x += 3.0f)
+                line.lineTo (x, yAt (x));
+
+            line.lineTo (to, yAt (to));
+            g.setColour (colour);
+            g.strokePath (line, juce::PathStrokeType (focused || selected ? 2.2f : 1.5f));
+
+            // 音符的起止：两端的小竖线
+            g.fillRect (x0, yAt (x0) - 3.0f, 1.5f, 6.0f);
+
+            if (! (focused || selected))
+                continue;
+
+            for (int i = 0; i < (int) env.points.size(); ++i)
+            {
+                const auto& pt = env.points[(size_t) i];
+
+                if (pt.time > n.length + 1.0e-9)
+                    continue;
+
+                const auto active = n.id == dragNote && i == dragPoint;
+                const auto dot = juce::Rectangle<float> (active ? 9.0f : 7.0f, active ? 9.0f : 7.0f)
+                                     .withCentre ({ (float) v.beatToX (n.start + pt.time), valueToY (pt.semitones) });
+                g.setColour (p.bg);
+                g.fillEllipse (dot.expanded (1.5f));
+                g.setColour (colour);
+                g.fillEllipse (dot);
+            }
+        }
+
+        // 拖动时显示数值
+        if (dragNote != 0 && dragLabel.isNotEmpty())
+        {
+            g.setFont (juce::FontOptions (11.5f, juce::Font::bold));
+            const auto box = juce::Rectangle<float> (70.0f, 16.0f).withCentre (dragLabelAt).constrainedWithin (getLocalBounds().toFloat());
+            g.setColour (p.bg.withAlpha (0.9f));
+            g.fillRoundedRectangle (box, 5.0f);
+            g.setColour (p.text);
+            g.drawText (dragLabel, box, juce::Justification::centred, false);
+        }
+
+        // MPE 模式下所有音符在同一个实例里，没法分开调音量
+        if (owner.processor.isMpeMode())
+        {
+            g.setColour (p.muted);
+            g.setFont (juce::FontOptions (11.5f));
+            g.drawFittedText (tr ("Volume and pan curves have no effect in MPE mode."), getLocalBounds().reduced (8, 0),
+                              juce::Justification::centredLeft, 1);
+        }
+    }
+
+    //==============================================================================
+    /** 鼠标处的音符：x 落在音符里；优先选中的音符，其次线离鼠标最近的。 */
+    const Note* noteAt (juce::Point<float> pos) const
+    {
+        const auto& v = owner.view;
+        const auto beat = v.xToBeat (pos.x);
+        const Note* best = nullptr;
+        auto bestScore = std::numeric_limits<float>::max();
+
+        for (const auto& n : owner.project.notes)
+        {
+            if (beat < n.start || beat > n.getEnd())
+                continue;
+
+            const auto distance = std::abs (valueToY (valueAt (n, beat - n.start)) - pos.y);
+            const auto score = distance - (owner.selection.count (n.id) != 0 ? 1000.0f : 0.0f);
+
+            if (score < bestScore)
+            {
+                bestScore = score;
+                best = &n;
+            }
+        }
+
+        return best;
+    }
+
+    /** pos 处的包络点（先看悬停的音符和选中的音符）。 */
+    std::pair<const Note*, int> pointAt (juce::Point<float> pos) const
+    {
+        const auto& v = owner.view;
+
+        for (const auto& n : owner.project.notes)
+        {
+            if (n.id != hoverNote && owner.selection.count (n.id) == 0)
+                continue;
+
+            const auto& env = envelopeOf (n, isVolume());
+
+            for (int i = (int) env.points.size(); --i >= 0;)
+            {
+                const auto& pt = env.points[(size_t) i];
+                const juce::Point<float> at ((float) v.beatToX (n.start + pt.time), valueToY (pt.semitones));
+
+                if (pt.time <= n.length + 1.0e-9 && at.getDistanceFrom (pos) <= 6.0f)
+                    return { &n, i };
+            }
+        }
+
+        return { nullptr, -1 };
+    }
+
+    double timeIn (const Note& n, float x, bool noSnap) const
+    {
+        auto beat = owner.view.xToBeat (x);
+
+        if (! noSnap)
+            beat = editing::snapNearest (beat, owner.grid);
+
+        return juce::jlimit (0.0, n.length, beat - n.start);
+    }
+
+    /** 被编辑的音符：按住的音符；它是选中的音符时，选中的全部一起编辑。 */
+    editing::IdSet targetsFor (NoteId id) const
+    {
+        return owner.selection.count (id) != 0 ? owner.selection : editing::IdSet { id };
+    }
+
+    /** 把按住的音符的新包络交给其他一起编辑的音符（按长度伸缩）。 */
+    void spread (Project& working, const Note& edited) const
+    {
+        const auto& env = envelopeOf (edited, isVolume());
+
+        for (auto id : dragTargets)
+            if (auto* other = editing::findNote (working, id); other != nullptr && id != edited.id)
+                envelopeOf (*other, isVolume()) = editing::stretchEnvelope (env, edited.length, other->length);
+    }
+
+    void mouseDown (const juce::MouseEvent& e) override
+    {
+        owner.grabKeyboardFocus();
+        dragNote = 0;
+        dragPoint = -1;
+        dragLabel = {};
+
+        const auto [pointNote, point] = pointAt (e.position);
+        const auto* note = pointNote != nullptr ? pointNote : noteAt (e.position);
+
+        if (note == nullptr)
+            return;
+
+        const auto id = note->id;
+
+        if (e.mods.isPopupMenu())
+        {
+            if (pointNote != nullptr)
+            {
+                const auto targets = targetsFor (id);
+                const auto volume = isVolume();
+                owner.edit (volume ? "Change volume" : "Change pan", [&] (Project& p)
+                {
+                    if (auto* n = editing::findNote (p, id))
+                    {
+                        editing::removeCurvePoint (envelopeOf (*n, volume), point);
+
+                        for (auto t : targets)
+                            if (auto* other = editing::findNote (p, t); other != nullptr && t != id)
+                                envelopeOf (*other, volume) = editing::stretchEnvelope (envelopeOf (*n, volume), n->length, other->length);
+                    }
+                });
+            }
+            else
+            {
+                showMenu (id);
+            }
+            return;
+        }
+
+        dragNote = id;
+        dragTargets = targetsFor (id);
+        owner.beginDrag();
+        base = owner.dragOrigin;
+
+        auto* n = editing::findNote (base, id);
+        auto& env = envelopeOf (*n, isVolume());
+
+        if (pointNote != nullptr)
+        {
+            dragPoint = point;
+        }
+        else if (e.getNumberOfClicks() >= 2)
+        {
+            // 双击：在这里加一个点，接着可以拖
+            dragPoint = editing::insertCurvePoint (env, timeIn (*n, e.position.x, e.mods.isAltDown()), yToValue (e.position.y));
+            auto working = base;
+            spread (working, *n);
+            base = working;
+            owner.updateDrag (base);
+        }
+
+        downValue = yToValue (e.position.y);
+        mouseDrag (e);
+    }
+
+    void mouseDrag (const juce::MouseEvent& e) override
+    {
+        if (dragNote == 0)
+            return;
+
+        auto working = base;
+        auto* n = editing::findNote (working, dragNote);
+
+        if (n == nullptr)
+            return;
+
+        const auto volume = isVolume();
+        auto& env = envelopeOf (*n, volume);
+        const auto value = yToValue (e.position.y);
+
+        if (dragPoint >= 0)
+        {
+            const auto t = timeIn (*n, e.position.x, e.mods.isAltDown());
+            editing::moveCurvePoint (env, dragPoint, t, value, n->length);
+            spread (working, *n);
+            dragLabel = formatValue (value, volume);
+        }
+        else
+        {
+            // 拖线：整条抬高或降低（选中的音符各自移动同样多）
+            const auto delta = value - downValue;
+
+            if (e.getDistanceFromDragStart() < 2)
+                return;
+
+            for (auto id : dragTargets)
+            {
+                if (auto* target = editing::findNote (working, id))
+                {
+                    auto& targetEnv = envelopeOf (*target, volume);
+
+                    if (targetEnv.points.empty())
+                        targetEnv.points = { { 0.0, 0.0 } };
+
+                    for (auto& pt : targetEnv.points)
+                        pt.semitones += delta;
+
+                    volume ? envelope::normaliseVolume (targetEnv) : envelope::normalisePan (targetEnv);
+                }
+            }
+
+            dragLabel = formatValue (valueAt (*n, owner.view.xToBeat (e.position.x) - n->start), volume);
+        }
+
+        dragLabelAt = e.position.translated (0.0f, -14.0f);
+        owner.updateDrag (std::move (working));
+        repaint();
+    }
+
+    void mouseUp (const juce::MouseEvent&) override
+    {
+        if (dragNote != 0)
+            owner.endDrag (isVolume() ? "Change volume" : "Change pan");
+
+        dragNote = 0;
+        dragPoint = -1;
+        dragLabel = {};
+        repaint();
+    }
+
+    void mouseMove (const juce::MouseEvent& e) override
+    {
+        const auto [pointNote, point] = pointAt (e.position);
+        const auto* note = pointNote != nullptr ? pointNote : noteAt (e.position);
+        const auto id = note != nullptr ? note->id : 0;
+
+        if (id != hoverNote)
+        {
+            hoverNote = id;
+            repaint();
+        }
+
+        setMouseCursor (pointNote != nullptr ? juce::MouseCursor::DraggingHandCursor
+                        : note != nullptr ? juce::MouseCursor::UpDownResizeCursor : juce::MouseCursor::NormalCursor);
+
+        if (pointNote != nullptr)
+            owner.setHoverHint (tr ("Drag  Move the point    Alt  No snap    Right-click  Delete it"));
+        else if (note != nullptr)
+            owner.setHoverHint (isVolume() ? tr ("Drag  Raise or lower the volume    Double-click  Add a point    Right-click  Fade in, fade out, reset")
+                                           : tr ("Drag  Move the pan left or right    Double-click  Add a point    Right-click  Reset"));
+        else
+            owner.setHoverHint (isVolume() ? tr ("Each note's line here is its volume curve")
+                                           : tr ("Each note's line here is its pan curve (top is left)"));
+    }
+
+    void mouseExit (const juce::MouseEvent&) override
+    {
+        if (hoverNote != 0)
+        {
+            hoverNote = 0;
+            repaint();
+        }
+
+        owner.setHoverHint ({});
+    }
+
+    void showMenu (NoteId id)
+    {
+        enum { resetId = 1, fadeInId, fadeOutId, swellId };
+        const auto volume = isVolume();
+        const auto targets = targetsFor (id);
+
+        juce::PopupMenu menu;
+
+        if (volume)
+        {
+            menu.addItem (fadeInId, tr ("Fade in"));
+            menu.addItem (fadeOutId, tr ("Fade out"));
+            menu.addItem (swellId, tr ("Swell (louder, then softer)"));
+            menu.addSeparator();
+        }
+
+        menu.addItem (resetId, volume ? tr ("Reset volume") : tr ("Reset pan"));
+
+        juce::Component::SafePointer<PianoRoll> safeOwner (&owner);
+        menu.showMenuAsync (juce::PopupMenu::Options().withMousePosition(), [safeOwner, targets, volume] (int result)
+        {
+            auto* o = safeOwner.getComponent();
+
+            if (o == nullptr || result <= 0)
+                return;
+
+            o->edit (volume ? "Change volume" : "Change pan", [&] (Project& p)
+            {
+                for (auto t : targets)
+                {
+                    auto* n = editing::findNote (p, t);
+
+                    if (n == nullptr)
+                        continue;
+
+                    auto& env = envelopeOf (*n, volume);
+
+                    switch (result)
+                    {
+                        case fadeInId:  editing::applyVolumeShape (env, editing::VolumeShape::fadeIn, n->length); break;
+                        case fadeOutId: editing::applyVolumeShape (env, editing::VolumeShape::fadeOut, n->length); break;
+                        case swellId:   editing::applyVolumeShape (env, editing::VolumeShape::swell, n->length); break;
+                        default:        env = {}; break;
+                    }
+                }
+            });
+        });
+    }
+
+    PianoRoll& owner;
+    Project base;
+    NoteId dragNote = 0, hoverNote = 0;
+    int dragPoint = -1;
+    double downValue = 0.0;
+    editing::IdSet dragTargets;
+    juce::String dragLabel;
+    juce::Point<float> dragLabelAt;
+};
+
+//==============================================================================
+// 栏的页签：VEL（力度）、VOL（音量包络）、PAN（声像包络），竖着排在琴键下方
+struct PianoRoll::LaneTabs final : public juce::Component,
+                                   public juce::SettableTooltipClient
+{
+    explicit LaneTabs (PianoRoll& o) : owner (o) {}
+
+    static constexpr LaneKind kinds[] = { LaneKind::velocity, LaneKind::volume, LaneKind::pan };
+    static constexpr const char* names[] = { "VEL", "VOL", "PAN" };
+
+    juce::Rectangle<float> rowBounds (int i) const
+    {
+        const auto rowH = (float) getHeight() / 3.0f;
+        return { 0.0f, rowH * (float) i, (float) getWidth(), rowH };
+    }
+
+    void paint (juce::Graphics& g) override
+    {
+        const auto& p = owner.palette;
+
+        for (int i = 0; i < 3; ++i)
+        {
+            const auto on = owner.lane == kinds[i];
+            g.setColour (on ? p.accent : (i == hovered ? p.text : p.muted));
+            g.setFont (juce::FontOptions (11.0f, on ? juce::Font::bold : juce::Font::plain));
+            g.drawText (names[i], rowBounds (i).withTrimmedRight (7.0f), juce::Justification::centredRight);
+        }
+    }
+
+    int rowAt (float y) const { return juce::jlimit (0, 2, (int) (y / juce::jmax (1.0f, (float) getHeight() / 3.0f))); }
+
+    void mouseDown (const juce::MouseEvent& e) override { owner.setLane (kinds[rowAt (e.position.y)]); }
+    void mouseMove (const juce::MouseEvent& e) override
+    {
+        setHovered (rowAt (e.position.y));
+        owner.setHoverHint (tr ("Click  Switch between velocity (VEL), volume (VOL) and pan (PAN)"));
+    }
+
+    void mouseExit (const juce::MouseEvent&) override
+    {
+        setHovered (-1);
+        owner.setHoverHint ({});
+    }
+
+    void setHovered (int row)
+    {
+        if (row != hovered)
+        {
+            hovered = row;
+            repaint();
+        }
+    }
+
+    PianoRoll& owner;
+    int hovered = -1;
 };
 
 //==============================================================================
@@ -2424,6 +2965,12 @@ struct PianoRoll::ShortcutsPanel final : public juce::Component
                 { TRK ("Right-click a note"), TRK ("Vibrato, trill, bends, presets, slice") },
                 { TRK ("G  (2+ notes selected)"), TRK ("Glide: merge a line or chords into legato notes") },
             } },
+            { TRK ("Volume and pan"), {
+                { TRK ("Click VOL or PAN"), TRK ("Show each note's volume or pan curve") },
+                { TRK ("Double-click in the lane"), TRK ("Add a point (right-click deletes it)") },
+                { TRK ("Drag a note's line"), TRK ("Raise or lower the whole curve") },
+                { TRK ("Right-click in the lane"), TRK ("Fade in, fade out, swell, reset") },
+            } },
             { TRK ("Playback"), {
                 { TRK ("Space  or  the play button"), TRK ("Play inside Curvable (works while FL is stopped)") },
                 { TRK ("Click the ruler"), TRK ("Set where playback starts") },
@@ -2449,7 +2996,7 @@ struct PianoRoll::ShortcutsPanel final : public juce::Component
         g.fillAll (p.bg.withAlpha (0.82f));
 
         // 按固定的逻辑尺寸排版，窗口太小时整体缩小
-        constexpr float cardW = 760.0f, cardH = 680.0f;
+        constexpr float cardW = 760.0f, cardH = 830.0f;
         const auto area = getLocalBounds().toFloat().reduced (12.0f);
         const auto scale = juce::jmin (1.0f, area.getWidth() / cardW, area.getHeight() / cardH);
         const auto card = juce::Rectangle<float> (cardW * scale, cardH * scale).withCentre (area.getCentre());
@@ -2499,7 +3046,7 @@ struct PianoRoll::ShortcutsPanel final : public juce::Component
         };
 
         drawColumn (32.0f, { 0, 1, 2 });
-        drawColumn (32.0f + colW + 24.0f, { 3, 4, 5 });
+        drawColumn (32.0f + colW + 24.0f, { 3, 4, 5, 6 });
 
         g.restoreState();
     }
@@ -2781,6 +3328,8 @@ PianoRoll::PianoRoll (CurvableProcessor& p, const Palette& pal)
       ruler (std::make_unique<Ruler> (*this)),
       noteArea (std::make_unique<NoteArea> (*this)),
       velocityLane (std::make_unique<VelocityLane> (*this)),
+      envelopeLane (std::make_unique<EnvelopeLane> (*this)),
+      laneTabs (std::make_unique<LaneTabs> (*this)),
       shortcutsPanel (std::make_unique<ShortcutsPanel> (*this)),
       namePrompt (std::make_unique<NamePrompt> (*this)),
       midiButton (std::make_unique<MidiButton> (*this)),
@@ -2791,8 +3340,10 @@ PianoRoll::PianoRoll (CurvableProcessor& p, const Palette& pal)
 {
     setWantsKeyboardFocus (true);
 
-    for (auto* c : std::initializer_list<juce::Component*> { keyboard.get(), ruler.get(), noteArea.get(), velocityLane.get() })
+    for (auto* c : std::initializer_list<juce::Component*> { keyboard.get(), ruler.get(), noteArea.get(), velocityLane.get(), laneTabs.get() })
         addAndMakeVisible (c);
+
+    addChildComponent (envelopeLane.get());
 
     for (auto* sb : { &hScroll, &vScroll })
     {
@@ -2837,6 +3388,7 @@ PianoRoll::PianoRoll (CurvableProcessor& p, const Palette& pal)
 
     follow = processor.getHostingContext().getSettings().getBoolValue ("followPlayhead", true);
 
+    laneTabs->setTooltip (tr ("Below the notes: velocity, or each note's volume or pan curve"));
     updateTexts();
     i18n::addListener (this);
 
@@ -2908,6 +3460,7 @@ void PianoRoll::resized()
 
     ruler->setBounds (inner.removeFromTop (rulerHeight));
     velocityLane->setBounds (inner.removeFromBottom (velocityHeight));
+    envelopeLane->setBounds (velocityLane->getBounds());
     inner.removeFromBottom (velocityGap);
     hScroll.setBounds (inner.removeFromBottom (scrollBarSize));
     inner.removeFromBottom (scrollBarGap);
@@ -2916,6 +3469,7 @@ void PianoRoll::resized()
 
     keysBounds = keysColumn.withY (inner.getY()).withHeight (inner.getHeight());
     keyboard->setBounds (keysBounds);
+    laneTabs->setBounds (keysColumn.getX(), velocityLane->getY(), keysColumn.getWidth(), velocityLane->getHeight());
 
     // 底部工具栏：左边是播放、循环、跟随（没有工具按钮：所有操作都在同一个编辑模式里，切开是按住 S）
     transportBounds = bottom.removeFromLeft (3 * 44 + 8).withSizeKeepingCentre (3 * 44 + 8, 44);
@@ -2960,19 +3514,13 @@ void PianoRoll::paint (juce::Graphics& g)
 {
     g.drawImage (chrome, getLocalBounds().toFloat());
 
-    // 力度区标签
-    const auto lane = velocityLane->getBounds();
-    g.setColour (palette.muted);
-    g.setFont (juce::FontOptions (11.0f, juce::Font::bold));
-    g.drawText ("VEL", juce::Rectangle<int> (keysBounds.getX(), lane.getY(), keysBounds.getWidth() - 7, lane.getHeight()),
-                juce::Justification::centredRight);
-
     // 底部工具栏右侧：状态或操作提示
     auto statusArea = getLocalBounds().removeFromBottom (bottomBarHeight)
                           .withTrimmedLeft (midiButton->getRight() + 12)
                           .withRight (helpButton.getX() - 8);
     const auto warning = getWarning();
-    g.setColour (statusIsError || (statusText.isEmpty() && warning.isNotEmpty()) ? palette.error : palette.muted);
+    const auto infoFlash = ! flashIsError && warning.isNotEmpty() && warning == flashText;
+    g.setColour (statusIsError || (statusText.isEmpty() && warning.isNotEmpty() && ! infoFlash) ? palette.error : palette.muted);
     g.setFont (juce::FontOptions (12.5f));
     const auto dropText = midiDropBeat >= 0.0 ? trf ("Drop to add the notes at bar {0}", (int) (midiDropBeat / 4.0) + 1) : juce::String();
     g.drawFittedText (dropText.isNotEmpty() ? dropText : statusText.isNotEmpty() ? statusText : (warning.isNotEmpty() ? warning : getHint()),
@@ -2984,6 +3532,9 @@ juce::String PianoRoll::getHint() const
     // 只提示界面上看不出来的操作；完整列表在 ? 里
     if (slicing)
         return tr ("Holding S  Click a note to cut it    Drag up or down  Cut several    Alt  No snap");
+
+    if (hoverHint.isNotEmpty())
+        return hoverHint;
 
     if (! selection.empty())
         return tr ("Shift+drag  Duplicate    Shift+click  Add or remove    \xe2\x86\x91\xe2\x86\x93  Transpose    Del  Delete");
@@ -3019,6 +3570,7 @@ void PianoRoll::repaintContent()
 
     noteArea->repaint();
     velocityLane->repaint();
+    envelopeLane->repaint();
     repaint (getLocalBounds().removeFromBottom (bottomBarHeight)); // 提示随选择变化
 
 }
@@ -3413,11 +3965,30 @@ void PianoRoll::stopPreview()
     previewPitch = -1;
 }
 
-void PianoRoll::flashMessage (const juce::String& text)
+void PianoRoll::setHoverHint (const juce::String& text)
+{
+    if (text != hoverHint)
+    {
+        hoverHint = text;
+        repaint (getLocalBounds().removeFromBottom (bottomBarHeight));
+    }
+}
+
+void PianoRoll::flashMessage (const juce::String& text, bool isError)
 {
     flashText = text;
+    flashIsError = isError;
     flashUntil = juce::Time::getMillisecondCounter() + 4000;
     repaint (getLocalBounds().removeFromBottom (bottomBarHeight));
+}
+
+void PianoRoll::setLane (LaneKind kind)
+{
+    lane = kind;
+    velocityLane->setVisible (lane == LaneKind::velocity);
+    envelopeLane->setVisible (lane != LaneKind::velocity);
+    laneTabs->repaint();
+    envelopeLane->repaint();
 }
 
 void PianoRoll::togglePlayback()

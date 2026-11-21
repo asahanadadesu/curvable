@@ -7,7 +7,8 @@
 namespace curvable
 {
 
-/** 引擎输出的一个 MIDI 事件：音符开 / 关，或弯音（isPitchWheel）。 */
+/** 引擎输出的一个事件：音符开 / 关、弯音（isPitchWheel），或者声部的输出音量和声像（isLevel，不是 MIDI，
+    由 Curvable 在混合各个实例的输出时施加）。 */
 struct MidiNoteEvent
 {
     int sampleOffset = 0; ///< 在当前音频块内的位置
@@ -17,10 +18,18 @@ struct MidiNoteEvent
     bool isPitchWheel = false;
     int wheelValue = 8192; ///< 14 位弯音值（isPitchWheel 时有效）
     int voice = 0;         ///< 声部（发给哪个音源实例）
+    bool isLevel = false;
+    float gain = 1.0f;     ///< isLevel 时有效
+    float pan = 0.0f;      ///< isLevel 时有效（-1..1）
 
     static MidiNoteEvent pitchWheel (int sampleOffset, int value, int voice = 0) noexcept
     {
         return { sampleOffset, false, 0, 0, true, value, voice };
+    }
+
+    static MidiNoteEvent level (int sampleOffset, float gain, float pan, int voice = 0) noexcept
+    {
+        return { sampleOffset, false, 0, 0, false, 8192, voice, true, gain, pan };
     }
 
     bool operator== (const MidiNoteEvent&) const = default;
@@ -70,6 +79,9 @@ private:
     - 音符开始时，先在同一采样上发送它起点处的弯音值，再发 note on（滑入的音不会先响一下原音高）。
     - 发声期间每 bendInterval 个采样求值一次，值变化时才发送。
     - 音符结束后保持最后的值（释放尾音不会跳回原音高），直到下一个音符开始；停止播放时回到中心。
+
+    音量、声像（isLevel 事件）：跟随本声部最近开始的音符的包络，求值方式与弯音相同。音符结束后、停止播放后都保持最后的值
+    （淡出的尾音不会突然变响），直到这个声部上的下一个音符开始。
 */
 class SketchPlayer
 {
@@ -108,7 +120,7 @@ public:
 
     bool hasActiveNotes() const noexcept { return ! active.empty(); }
 
-    /** 音源实例的弯音状态不确定时（例如换了实例）：立即发送一次中心值，并且下一次求值总会发送。 */
+    /** 音源实例的弯音状态不确定时（例如换了实例）：立即发送一次中心值（音量、声像回到原样），并且下一次求值总会发送。 */
     void resetWheel (int sampleOffset, MidiEventList& out);
 
     /** 弯音求值的间隔（采样）。 */
@@ -140,6 +152,10 @@ private:
     void sendWheel (int value, int sampleOffset, MidiEventList& out);
     int wheelValueAt (const ScheduledNote&, double beat) const noexcept;
 
+    void sendLevel (const ScheduledNote&, double beat, int sampleOffset, MidiEventList& out);
+    void renderLevels (double beatFrom, double beatTo, double from, double sampleAtFrom,
+                       int blockStart, int blockEnd, double samplesPerBeat, MidiEventList& out);
+
     /** 在 [beatFrom, beatTo) 对应的采样上按间隔更新弯音。 */
     void renderBends (double beatFrom, double beatTo, double from, double sampleAtFrom,
                       int blockStart, int blockEnd, double samplesPerBeat, MidiEventList& out);
@@ -154,6 +170,9 @@ private:
     double secondsPerBeat = 0.5; ///< 最近一次 render 时的速度
     NoteId wheelOwner = 0;
     int lastWheel = 8192;
+    NoteId levelOwner = 0;                    ///< 音量、声像跟随的音符（结束后仍然保留）
+    const ScheduledNote* levelNote = nullptr;
+    float lastGain = 1.0f, lastPan = 0.0f;
     std::uint64_t activationCounter = 0;
 };
 

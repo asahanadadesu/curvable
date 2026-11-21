@@ -147,6 +147,9 @@ TEST_CASE ("each voice gets its own notes and pitch wheel events", "[voices][eng
 
     for (const auto& e : out.get())
     {
+        if (e.isLevel)
+            continue;
+
         if (e.isPitchWheel)
         {
             wheelVoices.insert (e.voice);

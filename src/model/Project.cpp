@@ -6,6 +6,98 @@
 namespace curvable
 {
 
+namespace envelope
+{
+    float gainFromDecibels (double decibels) noexcept
+    {
+        if (! (decibels > volumeMin))
+            return 0.0f;
+
+        return (float) std::pow (10.0, std::min (decibels, volumeMax) / 20.0);
+    }
+
+    double faderFromDecibels (double decibels) noexcept
+    {
+        if (! (decibels > volumeMin))
+            return 0.0;
+
+        return std::sqrt (std::pow (10.0, std::min (decibels, volumeMax) / 20.0) / 2.0);
+    }
+
+    double decibelsFromFader (double fader) noexcept
+    {
+        const auto gain = 2.0 * fader * fader;
+        return gain > 0.0 ? std::clamp (20.0 * std::log10 (gain), volumeMin, volumeMax) : volumeMin;
+    }
+
+    double volumeAt (const Envelope& e, double time) noexcept
+    {
+        const auto& pts = e.points;
+
+        if (pts.empty())
+            return 0.0;
+
+        if (time <= pts.front().time)
+            return pts.front().semitones;
+
+        for (std::size_t i = 1; i < pts.size(); ++i)
+        {
+            const auto& a = pts[i - 1];
+            const auto& b = pts[i];
+
+            if (time < b.time)
+            {
+                const auto span = b.time - a.time;
+
+                if (span <= 0.0)
+                    return b.semitones;
+
+                if (time <= a.time)
+                    return a.semitones; // 正好在节点上：原样返回，不经过换算
+
+                const auto from = faderFromDecibels (a.semitones), to = faderFromDecibels (b.semitones);
+                return decibelsFromFader (from + (to - from) * PitchCurve::shape ((time - a.time) / span, a.tension));
+            }
+        }
+
+        return pts.back().semitones;
+    }
+
+    Envelope toFader (Envelope e)
+    {
+        for (auto& p : e.points)
+            p.semitones = faderFromDecibels (p.semitones);
+
+        return e;
+    }
+
+    Envelope fromFader (Envelope e)
+    {
+        for (auto& p : e.points)
+            p.semitones = decibelsFromFader (p.semitones);
+
+        return e;
+    }
+
+    namespace
+    {
+        void normaliseValues (Envelope& e, double low, double high)
+        {
+            e.normalise();
+            e.vibrato = {};
+
+            for (auto& p : e.points)
+            {
+                p.semitones = std::clamp (p.semitones, low, high);
+                p.vibrato.reset();
+            }
+        }
+    }
+
+    void normaliseVolume (Envelope& e) { normaliseValues (e, volumeMin, volumeMax); }
+    void normalisePan (Envelope& e)    { normaliseValues (e, -1.0, 1.0); }
+}
+
 NoteId Project::addNote (double start, double length, int pitch, float velocity)
 {
     const auto id = nextId++;

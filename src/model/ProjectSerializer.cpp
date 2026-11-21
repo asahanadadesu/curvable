@@ -11,6 +11,8 @@ namespace
         const juce::Identifier mode     { "mode" };
         const juce::Identifier nextId   { "nextId" };
         const juce::Identifier note     { "Note" };
+        const juce::Identifier volume   { "Volume" };
+        const juce::Identifier pan      { "Pan" };
         const juce::Identifier cue      { "Cue" };
         const juce::Identifier id       { "id" };
         const juce::Identifier start    { "start" };
@@ -88,6 +90,18 @@ juce::ValueTree ProjectSerializer::toValueTree (const Project& project)
         note.setProperty (ids::velocity, n.velocity, nullptr);
 
         writeCurve (n.curve, note);
+
+        // 包络：各自一个子节点，节点格式与音高曲线相同
+        for (const auto& [childType, envelope] : { std::pair { ids::volume, &n.volume }, std::pair { ids::pan, &n.pan } })
+        {
+            if (envelope->points.empty())
+                continue;
+
+            juce::ValueTree child (childType);
+            writeCurve (*envelope, child);
+            note.appendChild (child, nullptr);
+        }
+
         tree.appendChild (note, nullptr);
     }
 
@@ -256,6 +270,10 @@ std::optional<Project> ProjectSerializer::fromValueTree (const juce::ValueTree& 
             n.velocity = (float) (double) child.getProperty (ids::velocity, 0.8);
 
             n.curve = readCurve (child);
+            n.volume = readCurve (child.getChildWithName (ids::volume));
+            n.pan = readCurve (child.getChildWithName (ids::pan));
+            envelope::normaliseVolume (n.volume);
+            envelope::normalisePan (n.pan);
             project.notes.push_back (n);
             maxId = std::max (maxId, n.id);
         }

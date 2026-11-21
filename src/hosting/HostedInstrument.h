@@ -1,5 +1,6 @@
 #pragma once
 
+#include "engine/InstanceLevel.h"
 #include "hosting/HostingContext.h"
 
 #include <array>
@@ -119,6 +120,14 @@ public:
     void prepare (double sampleRate, int maxBlockSize);
     void release();
 
+    /** 音频线程：下一次 process 时第 i 个实例的输出乘上 levels[i] 的音量、声像（音符的包络）。
+        只对这一次 process 有效；不设置时原样输出。 */
+    void setLevels (const InstanceLevel* levels, int count) noexcept
+    {
+        pendingLevels = levels;
+        numPendingLevels = count;
+    }
+
     /** 音频线程：midi[i] 交给第 i 个实例，所有实例的输出相加后写入 output（已有内容会被覆盖）。
         numMidi 少于实例数时，其余实例收到空的 MIDI。处理后清空所有 midi。 */
     void process (juce::AudioBuffer<float>& output, juce::MidiBuffer* midi, int numMidi,
@@ -173,6 +182,8 @@ private:
     static bool trackMidi (Activity&, const juce::MidiBuffer&) noexcept;
     juce::AudioBuffer<float> scratch;
     juce::MidiBuffer spareMidi;
+    const InstanceLevel* pendingLevels = nullptr; ///< 音频线程：下一次 process 用的音量、声像（setLevels）
+    int numPendingLevels = 0;
     bool lastNonRealtime = false; // 仅音频线程访问
 
     double sampleRate = 44100.0;

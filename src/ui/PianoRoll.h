@@ -74,11 +74,16 @@ public:
     /** 显示 / 隐藏全部操作说明（也可以按 F1 或 ?）。 */
     void showShortcuts (bool shouldShow);
 
+    /** 在底部提示栏显示几秒钟的提醒（例如操作无法完成的原因；isError = false 时不用红色）。 */
+    void flashMessage (const juce::String&, bool isError = true);
+
 private:
     struct Keyboard;
     struct Ruler;
     struct NoteArea;
     struct VelocityLane;
+    struct EnvelopeLane;
+    struct LaneTabs;
     struct ShortcutsPanel;
     struct NamePrompt;
     struct MidiButton;
@@ -144,8 +149,8 @@ private:
     /** 把选中的音符合并成一个音符，用滑音连起来（G）。 */
     void glideSelection();
 
-    /** 在底部提示栏显示几秒钟的提醒（例如操作无法完成的原因）。 */
-    void flashMessage (const juce::String&);
+    /** 鼠标下的东西怎么用（显示在底部提示栏）；离开时传空字符串。 */
+    void setHoverHint (const juce::String&);
 
     // MIDI 导入导出
     /** 把 MIDI 文件里的音符加到 atBeat（文件开头对齐到这里）。 */
@@ -175,6 +180,8 @@ private:
     std::unique_ptr<Ruler> ruler;
     std::unique_ptr<NoteArea> noteArea;
     std::unique_ptr<VelocityLane> velocityLane;
+    std::unique_ptr<EnvelopeLane> envelopeLane;
+    std::unique_ptr<LaneTabs> laneTabs;
     std::unique_ptr<ShortcutsPanel> shortcutsPanel;
     std::unique_ptr<NamePrompt> namePrompt;
     CurvePresetLibrary presetLibrary;
@@ -194,6 +201,11 @@ private:
     Project project;          ///< 当前工程的本地副本（显示用）
     editing::IdSet selection;
     editing::IdSet overflowNotes; ///< 因为声部不够而与别的音符共用音源实例的音符
+    /** 音符下方的栏：力度，或者每个音符的音量、声像包络。 */
+    enum class LaneKind { velocity, volume, pan };
+    LaneKind lane = LaneKind::velocity;
+    void setLane (LaneKind);
+
     bool slicing = false;     ///< 按住 S：单击或拖动切开音符（只有一个编辑模式，没有工具切换）
     double grid = 0.25;       ///< 吸附网格（拍）；0 表示不吸附
     double defaultLength = 1.0;
@@ -209,6 +221,9 @@ private:
 
     juce::String flashText;
     juce::uint32 flashUntil = 0;
+    bool flashIsError = true;
+
+    juce::String hoverHint;
 
     juce::String statusText;
     bool statusIsError = false;

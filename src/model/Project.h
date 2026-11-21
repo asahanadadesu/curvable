@@ -10,6 +10,38 @@ namespace curvable
 
 using NoteId = std::uint64_t;
 
+/** 音量、声像包络：沿用 PitchCurve 的节点和每段弯曲（不用颤音）。节点的 semitones 字段存的是值：
+    - 音量：相对 0 dB 的分贝数，envelope::volumeMin 及以下为静音，最大 envelope::volumeMax；
+      节点之间按推子位置过渡（envelope::volumeAt），不按分贝，这样淡入淡出听起来均匀；
+    - 声像：-1（左）..1（右）。
+    没有节点时为 0（音量不变、居中）。由 Curvable 直接调整这个音符所在的音源副本的输出，任何音源都能用；
+    MPE 模式下所有音符在同一个实例里，不起作用。 */
+using Envelope = PitchCurve;
+
+namespace envelope
+{
+    constexpr double volumeMin = -48.0; ///< 这个值及以下为静音
+    constexpr double volumeMax = 6.0;
+
+    /** 分贝 → 增益（volumeMin 及以下为 0）。 */
+    float gainFromDecibels (double decibels) noexcept;
+
+    /** 分贝 ↔ 推子位置 0..1（sqrt (增益 / 2)：0 = 静音，0 dB 约 0.71，1 = volumeMax）。 */
+    double faderFromDecibels (double decibels) noexcept;
+    double decibelsFromFader (double fader) noexcept;
+
+    /** 音量包络在 time 处的分贝数：相邻节点之间按推子位置过渡（含每段的弯曲）。 */
+    double volumeAt (const Envelope&, double time) noexcept;
+
+    /** 把节点的值在分贝和推子位置之间换算（切开音量包络时在推子位置上切）。 */
+    Envelope toFader (Envelope);
+    Envelope fromFader (Envelope);
+
+    /** 夹住节点的值，去掉颤音（包络不用）。 */
+    void normaliseVolume (Envelope&);
+    void normalisePan (Envelope&);
+}
+
 /** Curvable 内部卷帘上的一个音符。时间单位均为拍（四分音符），与宿主速度无关。 */
 struct Note
 {
@@ -19,6 +51,8 @@ struct Note
     int pitch = 60;        ///< MIDI 音高 0..127
     float velocity = 0.8f; ///< 0..1
     PitchCurve curve;      ///< 音高曲线（相对本音符）；没有节点即不弯音
+    Envelope volume;       ///< 音量包络（分贝，相对 0 dB）
+    Envelope pan;          ///< 声像包络（-1..1）
 
     double getEnd() const noexcept { return start + length; }
 

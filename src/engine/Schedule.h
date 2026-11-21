@@ -18,6 +18,14 @@ struct ScheduledNote
     PitchCurve curve;   ///< 已 normalise
     int voice = 0;      ///< 分配到的声部（音源实例），见 VoiceAllocator
     bool overflow = false; ///< 声部不够用，与弯音不同的音符共用了声部（重叠期间弯音会互相影响）
+    Envelope volume;    ///< 已夹住范围
+    Envelope pan;
+
+    /** 不弯音、音量和声像都不变：这样的音符可以随便共用一个音源实例。 */
+    bool isPlain() const noexcept { return curve.isFlat() && volume.isFlat() && pan.isFlat(); }
+
+    /** 弯音、音量、声像的曲线都一样。 */
+    bool sameShape (const ScheduledNote& o) const noexcept { return curve == o.curve && volume == o.volume && pan == o.pan; }
 };
 
 /** 从 Project 编译出的不可变回放数据。在后台/消息线程创建，交给音频线程只读使用。 */

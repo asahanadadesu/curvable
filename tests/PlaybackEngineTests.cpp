@@ -391,7 +391,7 @@ TEST_CASE ("internal playback steps aside when the host takes over", "[engine][i
         MidiEventList out;
         r.engine.stopInternal (out);
         for (const auto& e : out.get())
-            if (! e.isPitchWheel)
+            if (! e.isPitchWheel && ! e.isLevel)
                 r.events.push_back ({ r.position + e.sampleOffset, e.noteOn, e.pitch });
 
         CHECK (r.soundingPitches().empty());

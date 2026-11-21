@@ -133,6 +133,7 @@ private:
     MidiEventList sketchEvents;
     std::vector<HostNote> hostNotes;
     std::array<juce::MidiBuffer, Schedule::maxVoices> voiceMidi; ///< 第 i 个音源实例收到的 MIDI
+    std::array<InstanceLevel, Schedule::maxVoices> voiceLevels;  ///< 第 i 个音源实例的输出音量、声像
     int routingCount = 0; ///< 当前按几个实例分配声部（变化时重新开始发声）
 
 

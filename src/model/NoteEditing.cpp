@@ -92,24 +92,28 @@ void trimNoteStarts (Project& target, const Project& original, const IdSet& ids,
 
         const auto d = std::min (deltaStart, n.length - minLength);
 
-        if (d > 0.0)
+        // 音高曲线和包络都留在原来的时间位置
+        for (auto* c : { &n.curve, &n.volume, &n.pan })
         {
-            if (! n.curve.points.empty())
-                n.curve = splitCurve (n.curve, d).second;
-        }
-        else if (d < 0.0)
-        {
-            for (auto& point : n.curve.points)
-                point.time -= d;
+            if (c->points.empty())
+                continue;
 
-            // 新加的开头保持第一个节点的音高（曲线在第一个节点之前本来就是这个值）
-            if (! n.curve.points.empty())
+            if (d > 0.0)
             {
-                auto first = n.curve.points.front();
+                *c = c == &n.volume ? envelope::fromFader (splitCurve (envelope::toFader (*c), d).second)
+                                    : splitCurve (*c, d).second;
+            }
+            else if (d < 0.0)
+            {
+                for (auto& point : c->points)
+                    point.time -= d;
+
+                // 新加的开头保持第一个节点的值（曲线在第一个节点之前本来就是这个值）
+                auto first = c->points.front();
                 first.time = 0.0;
                 first.tension = 0.0f;
                 first.vibrato.reset();
-                n.curve.points.insert (n.curve.points.begin(), first);
+                c->points.insert (c->points.begin(), first);
             }
         }
 
@@ -312,6 +316,33 @@ GlideResult glideNotes (Project& p, const IdSet& ids, double glideBeats)
 
     merged.normalise();
 
+    // 包络：每个音符的包络平移到它在合并后音符里的位置；没有包络的音符在它的起点取默认值
+    auto mergeEnvelope = [&] (Envelope Note::* member)
+    {
+        Envelope result;
+
+        if (std::all_of (chain.begin(), chain.end(), [&] (const Note& n) { return (n.*member).points.empty(); }))
+            return result;
+
+        for (const auto& n : chain)
+        {
+            const auto shift = n.start - origin;
+            const auto& source = n.*member;
+
+            if (source.points.empty())
+                result.points.push_back ({ shift, 0.0 });
+
+            for (const auto& point : source.points)
+                result.points.push_back ({ shift + point.time, point.semitones, point.tension });
+        }
+
+        result.normalise();
+        return result;
+    };
+
+    const auto mergedVolume = mergeEnvelope (&Note::volume);
+    const auto mergedPan = mergeEnvelope (&Note::pan);
+
     // 换上合并后的音符
     const auto id = first.id;
     std::erase_if (p.notes, [&] (const Note& n) { return ids.count (n.id) != 0 && n.id != id; });
@@ -321,6 +352,8 @@ GlideResult glideNotes (Project& p, const IdSet& ids, double glideBeats)
         target->start = origin;
         target->length = end - origin;
         target->curve = merged;
+        target->volume = mergedVolume;
+        target->pan = mergedPan;
     }
 
     return { id, GlideResult::Error::none };
@@ -590,11 +623,15 @@ IdSet sliceNotes (Project& p, const IdSet& ids, double atBeat)
 
         const auto cut = atBeat - n.start;
         auto [left, right] = splitCurve (n.curve, cut);
+        auto [volumeLeft, volumeRight] = splitCurve (envelope::toFader (n.volume), cut); // 音量在推子位置上切
+        auto [panLeft, panRight] = splitCurve (n.pan, cut);
 
         Note r = n;
         r.start = atBeat;
         r.length = n.getEnd() - atBeat;
         r.curve = std::move (right);
+        r.volume = n.volume.points.empty() ? Envelope {} : envelope::fromFader (std::move (volumeRight));
+        r.pan = n.pan.points.empty() ? Envelope {} : std::move (panRight);
 
         // 后半段的音高改为切点处最接近的半音（例如切在滑音之后，后半段就是滑到的那个音）
         if (! r.curve.points.empty())
@@ -608,13 +645,23 @@ IdSet sliceNotes (Project& p, const IdSet& ids, double atBeat)
 
         n.length = cut;
         n.curve = std::move (left);
+
+        if (! n.volume.points.empty())
+            n.volume = envelope::fromFader (std::move (volumeLeft));
+
+        if (! n.pan.points.empty())
+            n.pan = std::move (panLeft);
+
         rights.push_back (std::move (r));
     }
 
     for (auto& r : rights)
     {
         const auto id = p.addNote (r.start, r.length, r.pitch, r.velocity);
-        findNote (p, id)->curve = std::move (r.curve);
+        auto* right = findNote (p, id);
+        right->curve = std::move (r.curve);
+        right->volume = std::move (r.volume);
+        right->pan = std::move (r.pan);
         added.insert (id);
     }
 
@@ -966,6 +1013,31 @@ int insertEnvelopePoint (Vibrato& v, double runLength, double x)
     pts.insert (pts.begin() + (std::ptrdiff_t) at, { x, value });
     v.setEnvelope (pts);
     return (int) at;
+}
+
+void applyVolumeShape (Envelope& e, VolumeShape shape, double length)
+{
+    constexpr auto silent = envelope::volumeMin;
+
+    switch (shape)
+    {
+        case VolumeShape::fadeIn:  e.points = { { 0.0, silent }, { length, 0.0 } }; break;
+        case VolumeShape::fadeOut: e.points = { { 0.0, 0.0 }, { length, silent } }; break;
+        case VolumeShape::swell:   e.points = { { 0.0, -24.0 }, { length * 0.5, 0.0 }, { length, -24.0 } }; break;
+    }
+
+    envelope::normaliseVolume (e);
+}
+
+Envelope stretchEnvelope (const Envelope& source, double sourceLength, double targetLength)
+{
+    auto result = source;
+    const auto scale = sourceLength > 0.0 ? targetLength / sourceLength : 1.0;
+
+    for (auto& p : result.points)
+        p.time *= scale;
+
+    return result;
 }
 
 void addVibrato (PitchCurve& c, int segment, double depth)

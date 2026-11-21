@@ -179,6 +179,14 @@ void applyPreset (PitchCurve& target, const PitchCurve& preset, double presetLen
 /** 深度包络（Vibrato::getEnvelope 的点；没画过时由 fade 换算，第一次编辑时变成画出来的包络）。
     runLength 是这一段颤音的长度（拍）。 */
 
+/** 常用的音量包络（替换原有的）：淡入、淡出、先渐强再渐弱。 */
+enum class VolumeShape { fadeIn, fadeOut, swell };
+
+void applyVolumeShape (Envelope&, VolumeShape, double noteLength);
+
+/** 把 source 按长度比例伸缩后复制给 target（选中的几个音符一起编辑包络时用）。 */
+Envelope stretchEnvelope (const Envelope& source, double sourceLength, double targetLength);
+
 /** 往上拉加颤音：给 segment（起点节点的下标；-1 = 整个音符）加上深度为 depth 的颤音。
     速度沿用这个音符上已有的颤音；深度包络从头开始。 */
 void addVibrato (PitchCurve&, int segment, double depth);

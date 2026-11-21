@@ -29,9 +29,12 @@ void SketchPlayer::activate (const ScheduledNote& note, double beat, int sampleO
     if (active.size() >= maxActiveNotes)
         return;
 
-    // 弯音轮交给新音符：先把弯音设到它当前位置的值，再发 note on
+    // 弯音轮和音量交给新音符：先设到它当前位置的值，再发 note on
     wheelOwner = note.id;
     sendWheel (wheelValueAt (note, beat), sampleOffset, out);
+    levelOwner = note.id;
+    levelNote = &note;
+    sendLevel (note, beat, sampleOffset, out);
 
     // 同音高已在发声：重新触发
     if (pitchCount[note.pitch] > 0)
@@ -103,6 +106,35 @@ int SketchPlayer::wheelValueAt (const ScheduledNote& note, double beat) const no
     return centsToPitchBend (note.curve.evaluate (t, note.end - note.start, secondsPerBeat) * 100.0, range).value;
 }
 
+void SketchPlayer::sendLevel (const ScheduledNote& note, double beat, int sampleOffset, MidiEventList& out)
+{
+    const auto t = std::clamp (beat - note.start, 0.0, note.end - note.start);
+    const auto gain = envelope::gainFromDecibels (envelope::volumeAt (note.volume, t));
+    const auto pan = (float) std::clamp (note.pan.evaluate (t), -1.0, 1.0);
+
+    if (std::abs (gain - lastGain) < 1.0e-4f && std::abs (pan - lastPan) < 1.0e-4f)
+        return;
+
+    lastGain = gain;
+    lastPan = pan;
+    out.add (MidiNoteEvent::level (sampleOffset, gain, pan, voice));
+}
+
+void SketchPlayer::renderLevels (double beatFrom, double beatTo, double from, double sampleAtFrom,
+                                 int blockStart, int blockEnd, double samplesPerBeat, MidiEventList& out)
+{
+    // 一个节点以内的包络是常数，开始时已经发过了
+    if (levelNote == nullptr || (levelNote->volume.points.size() < 2 && levelNote->pan.points.size() < 2)
+        || beatFrom > levelNote->end)
+        return;
+
+    const auto firstSample = std::max (blockStart, toSampleIndex (sampleAtFrom + (beatFrom - from) * samplesPerBeat));
+    const auto endSample = std::min (blockEnd, toSampleIndex (sampleAtFrom + (beatTo - from) * samplesPerBeat));
+
+    for (auto s = ((firstSample + bendInterval - 1) / bendInterval) * bendInterval; s < endSample; s += bendInterval)
+        sendLevel (*levelNote, from + (s - sampleAtFrom) / samplesPerBeat, s, out);
+}
+
 void SketchPlayer::renderBends (double beatFrom, double beatTo, double from, double sampleAtFrom,
                                 int blockStart, int blockEnd, double samplesPerBeat, MidiEventList& out)
 {
@@ -128,6 +160,12 @@ void SketchPlayer::renderBends (double beatFrom, double beatTo, double from, dou
 void SketchPlayer::setSchedule (const Schedule* newSchedule, double currentBeat, int sampleOffset, MidiEventList& out)
 {
     schedule = newSchedule;
+
+    // 音量跟随的音符：换成新 Schedule 里的数据（不存在了、换了声部时不再跟随，保持当前的值）
+    levelNote = schedule != nullptr ? schedule->find (levelOwner) : nullptr;
+
+    if (levelNote != nullptr && levelNote->voice != voice)
+        levelNote = nullptr;
 
     for (std::size_t i = active.size(); i-- > 0;)
     {
@@ -200,6 +238,7 @@ void SketchPlayer::render (double from, double to, double sampleAtFrom, int bloc
         if (action.beat > cursor)
         {
             renderBends (cursor, action.beat, from, sampleAtFrom, blockStart, blockEnd, samplesPerBeat, out);
+            renderLevels (cursor, action.beat, from, sampleAtFrom, blockStart, blockEnd, samplesPerBeat, out);
             cursor = action.beat;
         }
 
@@ -223,6 +262,7 @@ void SketchPlayer::render (double from, double to, double sampleAtFrom, int bloc
     }
 
     renderBends (cursor, to, from, sampleAtFrom, blockStart, blockEnd, samplesPerBeat, out);
+    renderLevels (cursor, to, from, sampleAtFrom, blockStart, blockEnd, samplesPerBeat, out);
 }
 
 void SketchPlayer::start (double beat, int sampleOffset, MidiEventList& out)
@@ -244,6 +284,12 @@ void SketchPlayer::resetWheel (int sampleOffset, MidiEventList& out)
 {
     lastWheel = 8192;
     out.add (MidiNoteEvent::pitchWheel (sampleOffset, 8192, voice));
+
+    lastGain = 1.0f;
+    lastPan = 0.0f;
+    levelOwner = 0;
+    levelNote = nullptr;
+    out.add (MidiNoteEvent::level (sampleOffset, 1.0f, 0.0f, voice));
 }
 
 void SketchPlayer::stopAll (int sampleOffset, MidiEventList& out)

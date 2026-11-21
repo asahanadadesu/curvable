@@ -8,13 +8,13 @@ namespace curvable
 
 bool areBendCompatible (const ScheduledNote& a, const ScheduledNote& b) noexcept
 {
-    const auto flatA = a.curve.isFlat(), flatB = b.curve.isFlat();
+    const auto plainA = a.isPlain(), plainB = b.isPlain();
 
-    if (flatA && flatB)
+    if (plainA && plainB)
         return true;
 
-    // 同时开始、曲线相同：弯音轮在两者重叠期间的值完全一样
-    return flatA == flatB && a.start == b.start && a.curve == b.curve;
+    // 同时开始、曲线相同：弯音轮和音量在两者重叠期间的值完全一样
+    return plainA == plainB && a.start == b.start && a.sameShape (b);
 }
 
 VoiceAllocation allocateVoices (std::vector<ScheduledNote>& notes, int maxVoices, double releaseGuard)
@@ -29,7 +29,7 @@ VoiceAllocation allocateVoices (std::vector<ScheduledNote>& notes, int maxVoices
     // 音符 j 对后来的音符 i 的占用到何时为止：两者都不弯时只到 j 结束，否则再加保护时长
     auto occupiedUntil = [&] (const ScheduledNote& j, const ScheduledNote& i)
     {
-        return j.end + (j.curve.isFlat() && i.curve.isFlat() ? 0.0 : releaseGuard);
+        return j.end + (j.isPlain() && i.isPlain() ? 0.0 : releaseGuard);
     };
 
     for (std::size_t i = 0; i < notes.size(); ++i)

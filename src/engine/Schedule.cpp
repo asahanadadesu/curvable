@@ -27,6 +27,10 @@ Schedule Schedule::compile (const Project& project)
         const auto velocity = std::clamp (static_cast<int> (std::lround (n.velocity * 127.0f)), 1, 127);
         ScheduledNote scheduled { n.id, n.start, n.start + n.length, n.pitch, velocity, n.curve };
         scheduled.curve.normalise();
+        scheduled.volume = n.volume;
+        scheduled.pan = n.pan;
+        envelope::normaliseVolume (scheduled.volume);
+        envelope::normalisePan (scheduled.pan);
         s.notes.push_back (std::move (scheduled));
     }
 
